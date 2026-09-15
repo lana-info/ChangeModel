@@ -436,6 +436,20 @@ def test_collect_free_items_missing_providers() -> None:
     assert len(errors) == 2  # Zen и OpenRouter не настроены
 
 
+def test_parse_atom_latest() -> None:
+    import gui
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <link rel="alternate" type="text/html" href="https://github.com/lana-info/ChangeModel/releases/tag/v1.2.0"/>
+    <title>ChangeModel v1.2.0</title>
+  </entry>
+</feed>"""
+    assert gui._parse_atom_latest(xml) == ("v1.2.0", "https://github.com/lana-info/ChangeModel/releases/tag/v1.2.0")
+    assert gui._parse_atom_latest("<feed xmlns='http://www.w3.org/2005/Atom'></feed>") == (None, None)
+
+
 def test_passthrough_without_base_url_returns_400() -> None:
     provider = {
         "id": "no-base",

@@ -22,6 +22,7 @@ import threading
 import time
 import urllib.request
 import webbrowser
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import tkinter as tk
@@ -1307,17 +1308,54 @@ def is_newer_version(latest: str, current: str) -> bool:
     return norm(_parse_version(latest)) > norm(_parse_version(current))
 
 
-def fetch_latest_release(timeout: int = 10) -> tuple[str | None, str | None]:
-    """(tag, html_url) последнего релиза на GitHub. Ошибки сети — исключением."""
+def _parse_atom_latest(data: str) -> tuple[str | None, str | None]:
+    """Разбор ленты releases.atom: (tag, html_url) первой записи."""
+    root = ET.fromstring(data)
+    ns = "{http://www.w3.org/2005/Atom}"
+    entry = root.find(f"{ns}entry")
+    if entry is None:
+        return None, None
+    link = entry.find(f"{ns}link[@rel='alternate']")
+    href = (link.get("href") if link is not None else "") or ""
+    tag = href.rsplit("/tag/", 1)[-1].strip() if "/tag/" in href else ""
+    return (tag or None), (href or None)
+
+
+def _latest_from_atom(timeout: int = 10) -> tuple[str | None, str | None]:
+    """Запасной путь: публичная лента releases.atom (без авторизации)."""
     req = urllib.request.Request(
-        LATEST_RELEASE_API,
-        headers={"User-Agent": "ChangeModel", "Accept": "application/vnd.github+json"},
+        f"https://github.com/{GITHUB_REPO}/releases.atom",
+        headers={"User-Agent": "ChangeModel"},
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        data = json.load(r)
-    tag = (data.get("tag_name") or "").strip() or None
-    url = (data.get("html_url") or "").strip() or None
-    return tag, url
+        data = r.read().decode("utf-8", "replace")
+    return _parse_atom_latest(data)
+
+
+def fetch_latest_release(timeout: int = 10) -> tuple[str | None, str | None]:
+    """(tag, html_url) последнего релиза на GitHub. Ошибки — исключением.
+
+    Сначала API; если он недоступен без авторизации (например, GitHub ещё
+    не разнёс смену приватности репозитория), читаем публичную ленту
+    releases.atom.
+    """
+    try:
+        req = urllib.request.Request(
+            LATEST_RELEASE_API,
+            headers={"User-Agent": "ChangeModel", "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.load(r)
+        tag = (data.get("tag_name") or "").strip() or None
+        url = (data.get("html_url") or "").strip() or None
+        if tag:
+            return tag, url
+    except Exception:
+        pass
+    tag, url = _latest_from_atom(timeout)
+    if tag:
+        return tag, url
+    raise RuntimeError("не удалось получить данные о релизах")
 
 
 class AboutDialog:
