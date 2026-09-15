@@ -49,6 +49,20 @@ python generator.py --profile changemodel   # переключить Codex на 
 
 Откат Codex на встроенные модели: `python generator.py --profile base`.
 
+## Совместимость
+
+- **Windows 10 / 11 (64-bit)** — готовый `ChangeModel.exe` из раздела
+  [Releases](https://github.com/lana-info/ChangeModel/releases): скачали,
+  запустили, пользуетесь. Python не нужен.
+- **Linux (VPS/сервер)** — прокси и генератор работают из исходников
+  (`python proxy/run_proxy.py`, `python generator.py`); окна там нет,
+  настройка — через файлы. Подробнее: [VDS.md](VDS.md).
+- **macOS** — окно и прокси работают из исходников (`python3 gui.py`);
+  нужен Python с tkinter (в сборке с python.org он встроен; для Homebrew
+  доустановите пакет `python-tk`). Отдельной сборки `.app` пока нет.
+- Везде дополнительно нужны: отдельно установленный **Codex CLI**,
+  интернет и ваши собственные API-ключи (хранятся только локально).
+
 ## Провайдеры и ключи
 
 Каждый провайдер в `providers.json` — это `base_url`, тип подключения
@@ -103,3 +117,17 @@ Quick start from source: `pip install -r proxy/requirements.txt tomlkit`,
 copy `proxy/.env.example` to `proxy/.env`, add your keys, run `python gui.py`
 (or deploy as a systemd service — see [VDS.md](VDS.md)). API keys stay
 local and are never committed. Python 3.11+. MIT license.
+
+## Compatibility
+
+- **Windows 10 / 11 (64-bit)** — ready-made `ChangeModel.exe` from
+  [Releases](https://github.com/lana-info/ChangeModel/releases): download,
+  run, done. No Python needed.
+- **Linux (VPS/server)** — proxy and generator run from source
+  (`python proxy/run_proxy.py`, `python generator.py`); no GUI there,
+  file-based setup. See [VDS.md](VDS.md).
+- **macOS** — GUI and proxy run from source (`python3 gui.py`); needs a
+  Python with tkinter (included in python.org builds; Homebrew needs the
+  `python-tk` package). No `.app` bundle yet.
+- Everywhere you additionally need: a separately installed **Codex CLI**,
+  internet access, and your own provider API keys (stored locally only).

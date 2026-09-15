@@ -542,8 +542,9 @@ class ChangeModelApp:
         row2.pack(fill=tk.X, pady=(4, 0))
         ttk.Button(row2, text="Бесплатные сегодня", command=self.show_free_models).pack(side=tk.LEFT)
         ttk.Button(row2, text="О программе", command=self.show_about).pack(side=tk.RIGHT)
-        self.autostart_var = tk.BooleanVar(value=self.is_autostart_enabled())
-        ttk.Checkbutton(row2, text="Автозапуск прокси при включении Windows", variable=self.autostart_var, command=self.toggle_autostart).pack(side=tk.LEFT, padx=(12, 0))
+        self.autostart_var = tk.BooleanVar(value=self.is_autostart_enabled() if sys.platform.startswith("win") else False)
+        if sys.platform.startswith("win"):
+            ttk.Checkbutton(row2, text="Автозапуск прокси при включении Windows", variable=self.autostart_var, command=self.toggle_autostart).pack(side=tk.LEFT, padx=(12, 0))
 
         paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
