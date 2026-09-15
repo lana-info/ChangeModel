@@ -1,0 +1,126 @@
+name: Release build
+
+# Сборка релизных файлов по тегу v*: Windows exe + macOS DMG.
+# Как выпустить релиз:
+#   1. Поменять APP_VERSION в gui.py на номер версии.
+#   2. git commit + git push
+#   3. git tag vX.Y.Z && git push origin vX.Y.Z
+# GitHub сам соберёт файлы и приложит их к релизу (или обновит его).
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check APP_VERSION matches tag
+        run: python scripts/check_version.py ${{ github.ref_name }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller fastapi uvicorn httpx tomlkit
+      - name: Run tests
+        run: |
+          python proxy/test_translation.py
+          python proxy/test_regressions.py
+      - name: Build exe
+        run: pyinstaller ChangeModel.spec --noconfirm
+      - name: Smoke test (proxy mode)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist/ChangeModel.exe -ArgumentList '--proxy' -WindowStyle Hidden -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Milliseconds 500
+            try { if ((Invoke-WebRequest 'http://127.0.0.1:4096/healthz' -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) { $ok = $true; break } } catch {}
+          }
+          if (-not $ok) { throw 'proxy did not start' }
+          (Invoke-RestMethod 'http://127.0.0.1:4096/v1/models' -TimeoutSec 60).models.Count
+          Invoke-WebRequest -Method Post 'http://127.0.0.1:4096/shutdown' -UseBasicParsing | Out-Null
+          Start-Sleep -Seconds 3
+          Stop-Process -Id $p.Id -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChangeModel-Windows
+          path: dist/ChangeModel.exe
+          if-no-files-found: error
+
+  build-macos:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check tkinter present
+        run: python -c "import tkinter; print('tk ok', tkinter.TkVersion)"
+      - name: Check APP_VERSION matches tag
+        run: python scripts/check_version.py ${{ github.ref_name }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller fastapi uvicorn httpx tomlkit
+      - name: Run tests
+        run: |
+          python proxy/test_translation.py
+          python proxy/test_regressions.py
+      - name: Build app bundle
+        run: pyinstaller ChangeModel.spec --noconfirm
+      - name: Smoke test (proxy mode, no display needed)
+        run: |
+          dist/ChangeModel.app/Contents/MacOS/ChangeModel --proxy &
+          PROXY_PID=$!
+          ok=0
+          for i in $(seq 1 60); do
+            sleep 2
+            if curl -sf --max-time 2 http://127.0.0.1:4096/healthz >/dev/null 2>&1; then ok=1; break; fi
+          done
+          if [ "$ok" != "1" ]; then kill $PROXY_PID 2>/dev/null; echo "proxy did not start"; exit 1; fi
+          curl -sf http://127.0.0.1:4096/v1/models | python -c "import json,sys; print('models:', len(json.load(sys.stdin)['models']))"
+          curl -sf -X POST http://127.0.0.1:4096/shutdown
+          sleep 3
+          kill $PROXY_PID 2>/dev/null || true
+      - name: Package DMG
+        run: |
+          rm -rf dmg-staging
+          mkdir -p dmg-staging
+          cp -R dist/ChangeModel.app dmg-staging/
+          ln -s /Applications dmg-staging/Applications
+          hdiutil create -volname "ChangeModel" -srcfolder dmg-staging -ov -format UDZO dist/ChangeModel-macOS.dmg
+          ls -la dist/ChangeModel-macOS.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChangeModel-macOS
+          path: dist/ChangeModel-macOS.dmg
+          if-no-files-found: error
+
+  publish:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-upload
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          ls -la dist-upload/
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist-upload/ChangeModel.exe dist-upload/ChangeModel-macOS.dmg --clobber
+          else
+            gh release create "$TAG" dist-upload/ChangeModel.exe dist-upload/ChangeModel-macOS.dmg --title "ChangeModel $TAG" --generate-notes
+          fi

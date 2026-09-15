@@ -40,7 +40,7 @@ PROVIDERS_FILE = BASE_DIR / "providers.json"
 
 BASE_MODEL = "gpt-5.6-luna"
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 GITHUB_REPO = "lana-info/ChangeModel"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases"

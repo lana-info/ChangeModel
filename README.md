@@ -57,9 +57,12 @@ python generator.py --profile changemodel   # переключить Codex на 
 - **Linux (VPS/сервер)** — прокси и генератор работают из исходников
   (`python proxy/run_proxy.py`, `python generator.py`); окна там нет,
   настройка — через файлы. Подробнее: [VDS.md](VDS.md).
-- **macOS** — окно и прокси работают из исходников (`python3 gui.py`);
-  нужен Python с tkinter (в сборке с python.org он встроен; для Homebrew
-  доустановите пакет `python-tk`). Отдельной сборки `.app` пока нет.
+- **macOS (Apple Silicon)** — файл `ChangeModel-macOS.dmg` из раздела
+  [Releases](https://github.com/lana-info/ChangeModel/releases): откройте
+  образ и перетащите `ChangeModel.app` в Программы. При первом запуске
+  macOS заблокирует программу без подписи Apple: кликните по ней правой
+  кнопкой → «Открыть» → «Открыть». Также работает запуск из исходников
+  (`python3 gui.py`; нужен Python с tkinter).
 - Везде дополнительно нужны: отдельно установленный **Codex CLI**,
   интернет и ваши собственные API-ключи (хранятся только локально).
 
@@ -91,6 +94,11 @@ python proxy/test_regressions.py    # регрессионные тесты пр
 
 Зависимости: FastAPI, uvicorn, httpx, tomlkit; Python 3.11+.
 
+Релизы (`v*`, Windows exe + macOS DMG) собираются автоматически workflow
+[.github/workflows/release.yml](.github/workflows/release.yml). Перед тегом
+обновите `APP_VERSION` в `gui.py` (проверяется скриптом
+`scripts/check_version.py`).
+
 ## Безопасность
 
 - Прокси слушает только `127.0.0.1`; запросы с чужим `Host`/`Origin`
@@ -118,6 +126,9 @@ copy `proxy/.env.example` to `proxy/.env`, add your keys, run `python gui.py`
 (or deploy as a systemd service — see [VDS.md](VDS.md)). API keys stay
 local and are never committed. Python 3.11+. MIT license.
 
+Releases (`v*`, Windows exe + macOS DMG) are built automatically by the
+[release workflow](.github/workflows/release.yml).
+
 ## Compatibility
 
 - **Windows 10 / 11 (64-bit)** — ready-made `ChangeModel.exe` from
@@ -126,8 +137,10 @@ local and are never committed. Python 3.11+. MIT license.
 - **Linux (VPS/server)** — proxy and generator run from source
   (`python proxy/run_proxy.py`, `python generator.py`); no GUI there,
   file-based setup. See [VDS.md](VDS.md).
-- **macOS** — GUI and proxy run from source (`python3 gui.py`); needs a
-  Python with tkinter (included in python.org builds; Homebrew needs the
-  `python-tk` package). No `.app` bundle yet.
+- **macOS (Apple Silicon)** — `ChangeModel-macOS.dmg` from
+  [Releases](https://github.com/lana-info/ChangeModel/releases): open the
+  image and drag `ChangeModel.app` to Applications. On first launch macOS
+  blocks the unsigned app: right-click it → Open → Open. Running from
+  source (`python3 gui.py`) also works with a tkinter-enabled Python.
 - Everywhere you additionally need: a separately installed **Codex CLI**,
   internet access, and your own provider API keys (stored locally only).
