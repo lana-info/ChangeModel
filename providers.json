@@ -1,0 +1,115 @@
+{
+  "default_model": "glm-5.3-flash",
+  "providers": [
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "kind": "passthrough",
+      "base_url": "https://openrouter.ai/api/v1",
+      "env_key": "OPENROUTER_API_KEY",
+      "wire_api": "responses",
+      "default_model": "cohere/north-mini-code:free",
+      "models": [
+        {
+          "id": "cohere/north-mini-code:free",
+          "name": "North Mini Code (free)"
+        },
+        {
+          "id": "openrouter/free",
+          "name": "Free Models Router (auto)"
+        },
+        {
+          "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+          "name": "Nemotron 3 Ultra (free)"
+        },
+        {
+          "id": "poolside/laguna-s-2.1:free",
+          "name": "Laguna S 2.1 (free)"
+        },
+        {
+          "id": "google/gemma-4-31b-it:free",
+          "name": "Gemma 4 31B (free)"
+        }
+      ]
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode Go",
+      "kind": "opencode-chat",
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "env_key": "OPENCODE_GO_API_KEY",
+      "wire_api": "responses",
+      "default_model": "glm-5.3-flash",
+      "models": [
+        {
+          "id": "glm-5.3",
+          "name": "GLM-5.3"
+        },
+        {
+          "id": "glm-5.3-flash",
+          "name": "GLM-5.3 Flash"
+        },
+        {
+          "id": "deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash"
+        },
+        {
+          "id": "deepseek-v4-flash-vision-exp",
+          "name": "DeepSeek V4 Flash Vision (exp)"
+        },
+        {
+          "id": "kimi-k3",
+          "name": "Kimi K3"
+        },
+        {
+          "id": "kimi-k2.7-code",
+          "name": "Kimi K2.7 Code"
+        },
+        {
+          "id": "mimo-v2.5",
+          "name": "MiMo V2.5"
+        },
+        {
+          "id": "qwen3.8-flash",
+          "name": "Qwen 3.8 Flash"
+        },
+        {
+          "id": "minimax-m3",
+          "name": "MiniMax M3"
+        }
+      ]
+    },
+    {
+      "id": "opencode-zen",
+      "name": "OpenCode Zen",
+      "kind": "opencode-chat",
+      "base_url": "https://opencode.ai/zen/v1",
+      "env_key": "OPENCODE_ZEN_API_KEY",
+      "wire_api": "responses",
+      "models": [
+        {
+          "id": "mimo-v2.5-free",
+          "name": "MiMo V2.5 (free)"
+        }
+      ]
+    },
+    {
+      "id": "gmi",
+      "name": "GMI Cloud",
+      "kind": "opencode-chat",
+      "base_url": "https://api.gmi-serving.com/v1",
+      "env_key": "GMI_API_KEY",
+      "wire_api": "responses",
+      "models": []
+    },
+    {
+      "id": "agentrouter",
+      "name": "Agent Router",
+      "kind": "passthrough",
+      "base_url": "https://agentrouter.org/v1",
+      "env_key": "AGENTROUTER_API_KEY",
+      "wire_api": "responses",
+      "models": []
+    }
+  ]
+}

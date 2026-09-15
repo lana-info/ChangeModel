@@ -1,0 +1,22 @@
+# секреты и рантайм-файлы
+.env
+proxy/.env
+proxy/proxy.pid
+*.log
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# pyinstaller
+build/
+dist/
+*.spec.bak
+
+# временные файлы атомарной записи
+*.tmp
+
+# песочница с чужими плагинами — в репозиторий не входит
+spike/
