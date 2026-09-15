@@ -49,7 +49,17 @@ from models_data import _catalog_entry, warm_limits  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("changemodel-proxy")
 
-app = FastAPI(title="ChangeModel proxy")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # lifespan вместо удалённого в новых версиях FastAPI add_event_handler:
+    # работает и на старых, и на новых версиях. warm_limits не блокирует —
+    # он лишь запускает фоновый поток прогрева кэша лимитов.
+    warm_limits()
+    yield
+    await _close_http_client()
+
+
+app = FastAPI(title="ChangeModel proxy", lifespan=_lifespan)
 
 PORT = int(os.environ.get("PROXY_PORT", "4096"))
 OPENCODE_UPSTREAM = os.environ.get("OPENCODE_GO_BASE_URL", "https://opencode.ai/zen/go/v1")
@@ -255,10 +265,6 @@ async def _close_http_client() -> None:
     if _http_client is not None:
         await _http_client.aclose()
         _http_client = None
-
-
-app.add_event_handler("shutdown", _close_http_client)
-app.add_event_handler("startup", warm_limits)
 
 
 # ---------------------------------------------------------------- passthrough
