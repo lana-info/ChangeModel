@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import webbrowser
 from pathlib import Path
 
 import tkinter as tk
@@ -37,6 +38,51 @@ BASE_DIR = APP_DIR
 PROVIDERS_FILE = BASE_DIR / "providers.json"
 
 BASE_MODEL = "gpt-5.6-luna"
+
+APP_VERSION = "1.0.0"
+GITHUB_REPO = "lana-info/ChangeModel"
+GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
+RELEASES_URL = f"{GITHUB_URL}/releases"
+LATEST_RELEASE_API = f"https://api.github.com/{GITHUB_REPO}/releases/latest"
+
+
+# ---------- внешний вид ----------
+# Только оформление: шрифты, отступы, акцентная кнопка и индикатор статуса.
+# Логика работы окна здесь не меняется.
+_FONT_BASE = ("Segoe UI", 10)
+_FONT_TITLE = ("Segoe UI", 10, "bold")
+_ACCENT_BG = "#2563eb"
+_ACCENT_FG = "white"
+_OK_COLOR = "#16a34a"
+_OFF_COLOR = "#dc2626"
+_NEUTRAL_COLOR = "#999999"
+
+
+def _apply_visual_theme(root: tk.Tk) -> None:
+    """Настраивает внешний вид окна. Безопасно, если темы или шрифта нет."""
+    try:
+        style = ttk.Style(root)
+        available = set(style.theme_names())
+        if sys.platform.startswith("win") and "vista" in available:
+            style.theme_use("vista")
+        elif "clam" in available:
+            style.theme_use("clam")
+        style.configure("TButton", padding=(10, 5), font=_FONT_BASE)
+        style.configure("TLabel", font=_FONT_BASE)
+        style.configure("TCheckbutton", font=_FONT_BASE)
+        style.configure("TEntry", padding=(4, 2), font=_FONT_BASE)
+        style.configure("TCombobox", padding=(4, 2), font=_FONT_BASE)
+        style.configure("Title.TLabel", font=_FONT_TITLE)
+        style.configure("Status.TLabel", font=_FONT_BASE)
+        style.configure("News.TLabel", font=_FONT_BASE, foreground="#374151")
+        style.configure("Accent.TButton", padding=(12, 6))
+        style.map(
+            "Accent.TButton",
+            foreground=[("!disabled", _ACCENT_FG)],
+            background=[("!disabled", _ACCENT_BG), ("active", "#1d4ed8"), ("pressed", "#1e40af")],
+        )
+    except Exception:
+        pass
 
 
 def ensure_data_file() -> None:
@@ -271,7 +317,7 @@ def _set_codex_token() -> None:
 class ChangeModelApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        root.title("ChangeModel — модели для Codex")
+        root.title(f"ChangeModel {APP_VERSION} — модели для Codex")
         root.geometry("880x540")
         root.minsize(740, 460)
 
@@ -281,6 +327,7 @@ class ChangeModelApp:
         ensure_data_file()
         self.load_providers()
 
+        _apply_visual_theme(root)
         self._build_layout()
         self.refresh_providers()
         self.update_status()
@@ -486,13 +533,14 @@ class ChangeModelApp:
 
         row1 = ttk.Frame(toolbar)
         row1.pack(fill=tk.X)
-        ttk.Button(row1, text="Запустить прокси", command=self.start_proxy).pack(side=tk.LEFT)
+        ttk.Button(row1, text="Запустить прокси", command=self.start_proxy, style="Accent.TButton").pack(side=tk.LEFT)
         ttk.Button(row1, text="Остановить прокси", command=self.stop_proxy).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(row1, text="Сбросить настройки Codex по умолчанию", command=self.apply_base).pack(side=tk.RIGHT)
 
         row2 = ttk.Frame(toolbar)
         row2.pack(fill=tk.X, pady=(4, 0))
         ttk.Button(row2, text="Бесплатные сегодня", command=self.show_free_models).pack(side=tk.LEFT)
+        ttk.Button(row2, text="О программе", command=self.show_about).pack(side=tk.RIGHT)
         self.autostart_var = tk.BooleanVar(value=self.is_autostart_enabled())
         ttk.Checkbutton(row2, text="Автозапуск прокси при включении Windows", variable=self.autostart_var, command=self.toggle_autostart).pack(side=tk.LEFT, padx=(12, 0))
 
@@ -502,8 +550,8 @@ class ChangeModelApp:
         # left: providers list
         left = ttk.Frame(paned, padding=(0, 0, 6, 0))
         paned.add(left, weight=1)
-        ttk.Label(left, text="Провайдеры").pack(anchor=tk.W)
-        self.providers_list = tk.Listbox(left, exportselection=False)
+        ttk.Label(left, text="Провайдеры", style="Title.TLabel").pack(anchor=tk.W, pady=(0, 2))
+        self.providers_list = tk.Listbox(left, exportselection=False, font=_FONT_BASE, activestyle="none", selectbackground=_ACCENT_BG, selectforeground=_ACCENT_FG, highlightthickness=1, highlightbackground="#d1d5db", relief="solid", borderwidth=1)
         self.providers_list.pack(fill=tk.BOTH, expand=True)
         self.providers_list.bind("<<ListboxSelect>>", self.on_select_provider)
         btns_l = ttk.Frame(left)
@@ -515,8 +563,8 @@ class ChangeModelApp:
         # right: models of selected provider
         right = ttk.Frame(paned, padding=(6, 0, 0, 0))
         paned.add(right, weight=2)
-        ttk.Label(right, text="Модели").pack(anchor=tk.W)
-        self.models_list = tk.Listbox(right, exportselection=False)
+        ttk.Label(right, text="Модели", style="Title.TLabel").pack(anchor=tk.W, pady=(0, 2))
+        self.models_list = tk.Listbox(right, exportselection=False, font=_FONT_BASE, activestyle="none", selectbackground=_ACCENT_BG, selectforeground=_ACCENT_FG, highlightthickness=1, highlightbackground="#d1d5db", relief="solid", borderwidth=1)
         self.models_list.pack(fill=tk.BOTH, expand=True)
         btns_r = ttk.Frame(right)
         btns_r.pack(fill=tk.X, pady=(4, 0))
@@ -527,11 +575,16 @@ class ChangeModelApp:
         ttk.Button(btns_r, text="Модель по умолчанию", command=self.set_default_model).pack(side=tk.RIGHT)
 
         self.status_var = tk.StringVar()
-        self.status = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, padding=(8, 4))
-        self.status.pack(fill=tk.X, side=tk.BOTTOM)
+        statusbar = ttk.Frame(self.root)
+        statusbar.pack(fill=tk.X, side=tk.BOTTOM)
+        self.proxy_dot = tk.Canvas(statusbar, width=14, height=14, highlightthickness=0)
+        self.proxy_dot.pack(side=tk.LEFT, padx=(8, 0), pady=4)
+        self._proxy_dot_id = self.proxy_dot.create_oval(2, 2, 12, 12, fill=_NEUTRAL_COLOR, outline="")
+        self.status = ttk.Label(statusbar, textvariable=self.status_var, relief=tk.SUNKEN, padding=(8, 4), style="Status.TLabel")
+        self.status.pack(side=tk.LEFT, fill=tk.X, expand=True)
         # Строка «новостей»: сколько бесплатных моделей доступно сегодня
         self.news_var = tk.StringVar()
-        self.news = ttk.Label(self.root, textvariable=self.news_var, padding=(8, 3))
+        self.news = ttk.Label(self.root, textvariable=self.news_var, padding=(8, 3), style="News.TLabel")
         self.news.pack(fill=tk.X, side=tk.BOTTOM)
         self.update_status()
 
@@ -561,7 +614,8 @@ class ChangeModelApp:
         if prov:
             for m in prov.get("models", []):
                 marker = " (по умолчанию)" if m["id"] == default else ""
-                self.models_list.insert(tk.END, f"{m['name']}  [{m['id']}]{marker}")
+                free = " · бесплатная" if str(m["id"]).lower().endswith(("-free", ":free")) else ""
+                self.models_list.insert(tk.END, f"{m['name']}  [{m['id']}]{marker}{free}")
 
     def on_select_provider(self, _event=None) -> None:
         self.refresh_models()
@@ -570,6 +624,15 @@ class ChangeModelApp:
         """Безопасно выполняет fn в главном потоке (окно может быть уже закрыто)."""
         try:
             self.root.after(0, fn)
+        except Exception:
+            pass
+
+    def _set_proxy_dot(self, color: str) -> None:
+        """Цвет индикатора статуса прокси. Только оформление."""
+        try:
+            dot = getattr(self, "proxy_dot", None)
+            if dot is not None:
+                dot.itemconfig(self._proxy_dot_id, fill=color)
         except Exception:
             pass
 
@@ -588,6 +651,7 @@ class ChangeModelApp:
 
             def apply() -> None:
                 proxy_text = "Прокси включен" if proxy_on else "Прокси выключен"
+                self._set_proxy_dot(_OK_COLOR if proxy_on else _OFF_COLOR)
                 if active:
                     self.status_var.set(f"{proxy_text}  |  Активна модель: {active}")
                 else:
@@ -868,6 +932,10 @@ class ChangeModelApp:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def show_about(self) -> None:
+        """Окно «О программе»: версия, ссылки, проверка обновлений."""
+        AboutDialog(self.root)
+
     def set_default_model(self) -> None:
         sel = self.models_list.curselection()
         if not sel:
@@ -900,7 +968,7 @@ class ProviderDialog:
         self.top.transient(parent)
 
         self.entries: dict[str, tk.Entry] = {}
-        body = ttk.Frame(self.top, padding=12)
+        body = ttk.Frame(self.top, padding=16)
         body.pack(fill=tk.BOTH, expand=True)
 
         for label, key in [
@@ -949,9 +1017,9 @@ class ProviderDialog:
         self.entries["env_key"].insert(0, initial.get("env_key", ""))
         self._on_kind()
 
-        btns = ttk.Frame(self.top, padding=12)
+        btns = ttk.Frame(self.top, padding=16)
         btns.pack(fill=tk.X)
-        ttk.Button(btns, text="Сохранить", command=self.on_ok).pack(side=tk.RIGHT)
+        ttk.Button(btns, text="Сохранить", command=self.on_ok, style="Accent.TButton").pack(side=tk.RIGHT)
         ttk.Button(btns, text="Отмена", command=self.top.destroy).pack(side=tk.RIGHT, padx=(0, 6))
 
         self.top.bind("<Return>", lambda _e: self.on_ok())
@@ -1014,7 +1082,7 @@ class ModelDialog:
         self.top.grab_set()
         self.top.transient(parent)
 
-        body = ttk.Frame(self.top, padding=12)
+        body = ttk.Frame(self.top, padding=16)
         body.pack(fill=tk.BOTH, expand=True)
         ttk.Label(body, text="ID модели (например, cohere/north-mini-code:free)").pack(anchor=tk.W)
         self.ent_id = ttk.Entry(body, width=52)
@@ -1025,9 +1093,9 @@ class ModelDialog:
         self.ent_id.insert(0, initial.get("id", ""))
         self.ent_name.insert(0, initial.get("name", ""))
 
-        btns = ttk.Frame(self.top, padding=12)
+        btns = ttk.Frame(self.top, padding=16)
         btns.pack(fill=tk.X)
-        ttk.Button(btns, text="Сохранить", command=self.on_ok).pack(side=tk.RIGHT)
+        ttk.Button(btns, text="Сохранить", command=self.on_ok, style="Accent.TButton").pack(side=tk.RIGHT)
         ttk.Button(btns, text="Отмена", command=self.top.destroy).pack(side=tk.RIGHT, padx=(0, 6))
 
         self.top.bind("<Return>", lambda _e: self.on_ok())
@@ -1064,14 +1132,14 @@ class CatalogPickerDialog:
         self.top.grab_set()
         self.top.transient(parent)
 
-        body = ttk.Frame(self.top, padding=12)
+        body = ttk.Frame(self.top, padding=16)
         body.pack(fill=tk.BOTH, expand=True)
         ttk.Label(body, text="Поиск:").pack(anchor=tk.W)
         self.ent_search = ttk.Entry(body)
         self.ent_search.pack(fill=tk.X, pady=(2, 6))
         self.ent_search.bind("<KeyRelease>", lambda _e: self._apply_filter())
 
-        self.list = tk.Listbox(body, selectmode=tk.EXTENDED, exportselection=False, height=20)
+        self.list = tk.Listbox(body, selectmode=tk.EXTENDED, exportselection=False, height=20, font=_FONT_BASE, activestyle="none", selectbackground=_ACCENT_BG, selectforeground=_ACCENT_FG, highlightthickness=1, highlightbackground="#d1d5db", relief="solid", borderwidth=1)
         self.list.pack(fill=tk.BOTH, expand=True)
         self.count_var = tk.StringVar()
         ttk.Label(body, textvariable=self.count_var).pack(anchor=tk.W, pady=(4, 0))
@@ -1082,9 +1150,9 @@ class CatalogPickerDialog:
             wraplength=520,
         ).pack(anchor=tk.W, pady=(2, 0))
 
-        btns = ttk.Frame(self.top, padding=12)
+        btns = ttk.Frame(self.top, padding=16)
         btns.pack(fill=tk.X)
-        ttk.Button(btns, text="Добавить выбранные", command=self.on_add).pack(side=tk.RIGHT)
+        ttk.Button(btns, text="Добавить выбранные", command=self.on_add, style="Accent.TButton").pack(side=tk.RIGHT)
         ttk.Button(btns, text="Отмена", command=self.top.destroy).pack(side=tk.RIGHT, padx=(0, 6))
 
         self._apply_filter()
@@ -1156,14 +1224,14 @@ class FreeModelsDialog:
         self.top.grab_set()
         self.top.transient(parent)
 
-        body = ttk.Frame(self.top, padding=12)
+        body = ttk.Frame(self.top, padding=16)
         body.pack(fill=tk.BOTH, expand=True)
         ttk.Label(body, text="Поиск:").pack(anchor=tk.W)
         self.ent_search = ttk.Entry(body)
         self.ent_search.pack(fill=tk.X, pady=(2, 6))
         self.ent_search.bind("<KeyRelease>", lambda _e: self._apply_filter())
 
-        self.list = tk.Listbox(body, selectmode=tk.EXTENDED, exportselection=False, height=20)
+        self.list = tk.Listbox(body, selectmode=tk.EXTENDED, exportselection=False, height=20, font=_FONT_BASE, activestyle="none", selectbackground=_ACCENT_BG, selectforeground=_ACCENT_FG, highlightthickness=1, highlightbackground="#d1d5db", relief="solid", borderwidth=1)
         self.list.pack(fill=tk.BOTH, expand=True)
         self.count_var = tk.StringVar()
         ttk.Label(body, textvariable=self.count_var).pack(anchor=tk.W, pady=(4, 0))
@@ -1185,9 +1253,9 @@ class FreeModelsDialog:
                 justify=tk.LEFT,
             ).pack(anchor=tk.W, pady=(2, 0))
 
-        btns = ttk.Frame(self.top, padding=12)
+        btns = ttk.Frame(self.top, padding=16)
         btns.pack(fill=tk.X)
-        ttk.Button(btns, text="Добавить выбранные", command=self.on_add).pack(side=tk.RIGHT)
+        ttk.Button(btns, text="Добавить выбранные", command=self.on_add, style="Accent.TButton").pack(side=tk.RIGHT)
         ttk.Button(btns, text="Отмена", command=self.top.destroy).pack(side=tk.RIGHT, padx=(0, 6))
 
         self._apply_filter()
@@ -1225,6 +1293,107 @@ class FreeModelsDialog:
             return
         self.result = [self.filtered[i] for i in sel]
         self.top.destroy()
+
+
+def _parse_version(text: str) -> tuple[int, ...]:
+    """Версия вида 'v1.2.3' -> (1, 2, 3). Нечисловые части игнорируются."""
+    return tuple(int(p) for p in re.findall(r"\d+", text or "")[:3])
+
+
+def is_newer_version(latest: str, current: str) -> bool:
+    """True, если latest новее current. Сравниваются числовые компоненты."""
+    def norm(v: tuple[int, ...]) -> tuple[int, int, int]:
+        return (v + (0, 0, 0))[:3]
+    return norm(_parse_version(latest)) > norm(_parse_version(current))
+
+
+def fetch_latest_release(timeout: int = 10) -> tuple[str | None, str | None]:
+    """(tag, html_url) последнего релиза на GitHub. Ошибки сети — исключением."""
+    req = urllib.request.Request(
+        LATEST_RELEASE_API,
+        headers={"User-Agent": "ChangeModel", "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.load(r)
+    tag = (data.get("tag_name") or "").strip() or None
+    url = (data.get("html_url") or "").strip() or None
+    return tag, url
+
+
+class AboutDialog:
+    """Окно «О программе»: версия, ссылки, проверка обновлений на GitHub."""
+
+    def __init__(self, parent: tk.Tk) -> None:
+        self.top = tk.Toplevel(parent)
+        self.top.title(f"О программе — ChangeModel {APP_VERSION}")
+        self.top.grab_set()
+        self.top.transient(parent)
+
+        body = ttk.Frame(self.top, padding=16)
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, text=f"ChangeModel {APP_VERSION}", style="Title.TLabel").pack(anchor=tk.W)
+        ttk.Label(
+            body,
+            text="Окно управления моделями для Codex и локальный прокси.",
+            foreground="#666666",
+            wraplength=420,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(4, 0))
+        ttk.Label(body, text="Страница проекта:").pack(anchor=tk.W, pady=(8, 0))
+        link = ttk.Label(body, text=GITHUB_URL, foreground="#2563eb", cursor="hand2")
+        link.pack(anchor=tk.W)
+        link.bind("<Button-1>", lambda _e: webbrowser.open(GITHUB_URL))
+
+        self.update_var = tk.StringVar(value="Нажмите «Проверить обновления», чтобы узнать о новом релизе.")
+        ttk.Label(body, textvariable=self.update_var, foreground="#666666", wraplength=420, justify=tk.LEFT).pack(anchor=tk.W, pady=(8, 0))
+
+        btns = ttk.Frame(self.top, padding=16)
+        btns.pack(fill=tk.X)
+        ttk.Button(btns, text="Проверить обновления", command=self.check_updates, style="Accent.TButton").pack(side=tk.LEFT)
+        self.btn_download = ttk.Button(btns, text="Скачать новую версию", command=self.open_releases, state=tk.DISABLED)
+        self.btn_download.pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(btns, text="Закрыть", command=self.top.destroy).pack(side=tk.RIGHT)
+
+        self.top.bind("<Return>", lambda _e: self.top.destroy())
+        self.top.update_idletasks()
+        w = max(480, self.top.winfo_reqwidth() + 40)
+        x = parent.winfo_rootx() + 100
+        y = parent.winfo_rooty() + 100
+        self.top.geometry(f"{w}x{self.top.winfo_reqheight()}+{x}+{y}")
+        parent.wait_window(self.top)
+
+    def open_releases(self) -> None:
+        webbrowser.open(RELEASES_URL)
+
+    def check_updates(self) -> None:
+        self.update_var.set("Проверяю обновления...")
+
+        def work() -> None:
+            try:
+                tag, _url = fetch_latest_release()
+            except Exception as e:
+                err = f"Не удалось проверить обновления: {e}"
+                try:
+                    self.top.after(0, lambda: self.update_var.set(err))
+                except Exception:
+                    pass
+                return
+
+            def apply() -> None:
+                if not tag:
+                    self.update_var.set("Не удалось получить данные о релизах.")
+                elif is_newer_version(tag, APP_VERSION):
+                    self.update_var.set(f"Доступна новая версия: {tag}. Нажмите «Скачать новую версию».")
+                    self.btn_download.config(state=tk.NORMAL)
+                else:
+                    self.update_var.set(f"У вас последняя версия ({APP_VERSION}).")
+
+            try:
+                self.top.after(0, apply)
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
 
 
 def main() -> None:
