@@ -91,7 +91,7 @@ def apply_profile(doc, profile: str) -> None:
     providers = doc.setdefault("model_providers", tomlkit.table())
     providers.pop("changemodel", None)
     providers["changemodel"] = {
-        "name": "ChangeModel (все провайдеры через прокси)",
+        "name": "Vibix ChangeModel (все провайдеры через прокси)",
         "base_url": PROXY_BASE_URL,
         "env_key": "CHANGE_MODEL_API_KEY",
         "wire_api": "responses",

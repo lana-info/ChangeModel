@@ -109,7 +109,7 @@ model = "deepseek-v4-flash"
 model_provider = "changemodel"
 
 [model_providers.changemodel]
-name = "ChangeModel (все провайдеры через прокси)"
+name = "Vibix ChangeModel (все провайдеры через прокси)"
 base_url = "http://127.0.0.1:4096/v1"
 env_key = "CHANGE_MODEL_API_KEY"
 wire_api = "responses"
@@ -125,7 +125,7 @@ GUI-окна на VDS нет, поэтому редактируйте `providers
 Прокси подхватывает правки `providers.json` и `.env` автоматически (по времени
 изменения файла) — перезапуск сервиса нужен только после обновления кода.
 
-Удобный вариант: вести список моделей локально в окне ChangeModel (Windows)
+Удобный вариант: вести список моделей локально в окне Vibix ChangeModel (Windows)
 и копировать готовый `providers.json` на сервер:
 ```bash
 scp providers.json user@server:/opt/changemodel/

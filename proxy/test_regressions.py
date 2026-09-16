@@ -595,6 +595,39 @@ def test_generator_model_fallback() -> None:
             generator.PROVIDERS_FILE = orig
 
 
+def test_free_line_marks_provider_and_new() -> None:
+    import gui
+
+    new_zen = {"id": "mimo-v2.5-free", "name": "MiMo", "added": False, "provider_id": "opencode-zen", "source": "OpenCode Zen"}
+    old_or = {"id": "x/x:free", "name": "X", "added": True, "provider_id": "openrouter", "source": "OpenRouter"}
+    assert gui.FreeModelsDialog._line(new_zen) == "[новая] [Zen] MiMo — mimo-v2.5-free"
+    assert gui.FreeModelsDialog._line(old_or) == "[OpenRouter] X — x/x:free"
+
+
+def test_add_free_items() -> None:
+    import gui
+
+    providers = [
+        {"id": "opencode-zen", "models": [{"id": "a", "name": "A"}]},
+        {"id": "openrouter", "models": []},
+    ]
+
+    class _Stub:
+        pass
+
+    stub = _Stub()
+    stub.providers = providers
+    chosen = [
+        {"id": "a", "name": "A", "provider_id": "opencode-zen"},
+        {"id": "b", "name": "B", "provider_id": "opencode-zen"},
+        {"id": "c", "name": "C", "provider_id": "openrouter"},
+        {"id": "d", "name": "D", "provider_id": "nope"},
+    ]
+    assert gui.ChangeModelApp._add_free_items(stub, chosen) == 2
+    assert [m["id"] for m in providers[0]["models"]] == ["a", "b"]
+    assert [m["id"] for m in providers[1]["models"]] == ["c"]
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

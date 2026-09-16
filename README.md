@@ -1,6 +1,6 @@
-# ChangeModel — любые модели для Codex
+# Vibix ChangeModel — любые модели для Codex
 
-ChangeModel — маленькое приложение и локальный прокси, которые позволяют
+Vibix ChangeModel — маленькое приложение и локальный прокси, которые позволяют
 использовать в Codex CLI модели любых внешних провайдеров — OpenCode Go/Zen,
 OpenRouter, GMI Cloud, Agent Router и других, — а не только встроенные.
 
@@ -12,7 +12,7 @@ OpenRouter, GMI Cloud, Agent Router и других, — а не только в
 
 ## Как это устроено
 
-- **Окно ChangeModel** (`gui.py`) — список провайдеров и моделей, ключи,
+- **Окно Vibix ChangeModel** (`gui.py`) — список провайдеров и моделей, ключи,
   кнопки запуска/остановки прокси, подбор моделей из каталогов провайдеров
   и лента «Бесплатные сегодня» (какие модели сегодня бесплатны в OpenCode Zen
   и OpenRouter).
@@ -112,9 +112,9 @@ MIT — см. [LICENSE](LICENSE).
 
 ---
 
-# ChangeModel (English)
+# Vibix ChangeModel (English)
 
-ChangeModel is a small GUI app plus a local proxy that lets Codex CLI use
+Vibix ChangeModel is a small GUI app plus a local proxy that lets Codex CLI use
 models from any external provider — OpenCode Go/Zen, OpenRouter, GMI Cloud,
 Agent Router and other OpenAI-compatible services — instead of only the
 built-in ones. All your models appear in Codex's model picker; the proxy

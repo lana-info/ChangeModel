@@ -1,4 +1,4 @@
-"""ChangeModel GUI: управление провайдерами и моделями для Codex.
+"""Vibix ChangeModel GUI: управление провайдерами и моделями для Codex.
 
 Окно позволяет:
 - просматривать список провайдеров и их модели (providers.json);
@@ -40,7 +40,7 @@ PROVIDERS_FILE = BASE_DIR / "providers.json"
 
 BASE_MODEL = "gpt-5.6-luna"
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.1.0"
 GITHUB_REPO = "lana-info/ChangeModel"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases"
@@ -57,6 +57,8 @@ _ACCENT_FG = "white"
 _OK_COLOR = "#16a34a"
 _OFF_COLOR = "#dc2626"
 _NEUTRAL_COLOR = "#999999"
+_PROVIDER_TINTS = {"opencode-zen": "#e8f0fe", "openrouter": "#e6f4ea"}
+_PROVIDER_SHORT = {"opencode-zen": "Zen", "openrouter": "OpenRouter"}
 
 
 def _apply_visual_theme(root: tk.Tk) -> None:
@@ -318,12 +320,13 @@ def _set_codex_token() -> None:
 class ChangeModelApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        root.title(f"ChangeModel {APP_VERSION} — модели для Codex")
-        root.geometry("880x540")
-        root.minsize(740, 460)
+        root.title(f"Vibix ChangeModel {APP_VERSION} — модели для Codex")
+        root.geometry("1120x560")
+        root.minsize(1040, 480)
 
         self.providers: list[dict] = []
         self._default_model = ""
+        self.free_items: list[dict] = []
         self._status_thread: threading.Thread | None = None
         ensure_data_file()
         self.load_providers()
@@ -551,7 +554,7 @@ class ChangeModelApp:
 
         # left: providers list
         left = ttk.Frame(paned, padding=(0, 0, 6, 0))
-        paned.add(left, weight=1)
+        paned.add(left, weight=3)
         ttk.Label(left, text="Провайдеры", style="Title.TLabel").pack(anchor=tk.W, pady=(0, 2))
         self.providers_list = tk.Listbox(left, exportselection=False, font=_FONT_BASE, activestyle="none", selectbackground=_ACCENT_BG, selectforeground=_ACCENT_FG, highlightthickness=1, highlightbackground="#d1d5db", relief="solid", borderwidth=1)
         self.providers_list.pack(fill=tk.BOTH, expand=True)
@@ -564,7 +567,7 @@ class ChangeModelApp:
 
         # right: models of selected provider
         right = ttk.Frame(paned, padding=(6, 0, 0, 0))
-        paned.add(right, weight=2)
+        paned.add(right, weight=5)
         ttk.Label(right, text="Модели", style="Title.TLabel").pack(anchor=tk.W, pady=(0, 2))
         self.models_list = tk.Listbox(right, exportselection=False, font=_FONT_BASE, activestyle="none", selectbackground=_ACCENT_BG, selectforeground=_ACCENT_FG, highlightthickness=1, highlightbackground="#d1d5db", relief="solid", borderwidth=1)
         self.models_list.pack(fill=tk.BOTH, expand=True)
@@ -575,6 +578,17 @@ class ChangeModelApp:
         ttk.Button(btns_r, text="Удалить", command=self.remove_model).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(btns_r, text="Подобрать", command=self.pick_models).pack(side=tk.RIGHT, padx=(0, 6))
         ttk.Button(btns_r, text="Модель по умолчанию", command=self.set_default_model).pack(side=tk.RIGHT)
+
+        # right-most: бесплатные модели видны сразу, без кнопки
+        free = ttk.Frame(paned, padding=(6, 0, 0, 0))
+        paned.add(free, weight=2)
+        ttk.Label(free, text="Бесплатно сегодня", style="Title.TLabel").pack(anchor=tk.W, pady=(0, 2))
+        self.free_list = tk.Listbox(free, selectmode=tk.EXTENDED, exportselection=False, font=_FONT_BASE, activestyle="none", selectbackground=_ACCENT_BG, selectforeground=_ACCENT_FG, highlightthickness=1, highlightbackground="#d1d5db", relief="solid", borderwidth=1)
+        self.free_list.pack(fill=tk.BOTH, expand=True)
+        btns_f = ttk.Frame(free)
+        btns_f.pack(fill=tk.X, pady=(4, 0))
+        ttk.Button(btns_f, text="Добавить", command=self.add_selected_free).pack(side=tk.LEFT)
+        ttk.Button(btns_f, text="Обновить", command=self.refresh_free_news).pack(side=tk.RIGHT)
 
         self.status_var = tk.StringVar()
         statusbar = ttk.Frame(self.root)
@@ -706,7 +720,7 @@ class ChangeModelApp:
         prov = dlg.result
         api_key = prov.pop("api_key", "")
         if any(p["id"] == prov["id"] for p in self.providers):
-            messagebox.showerror("ChangeModel", f"Провайдер с id '{prov['id']}' уже есть.")
+            messagebox.showerror("Vibix ChangeModel", f"Провайдер с id '{prov['id']}' уже есть.")
             return
         self.providers.append(prov)
         self.save_providers()
@@ -720,7 +734,7 @@ class ChangeModelApp:
     def edit_provider(self) -> None:
         prov = self.current_provider()
         if not prov:
-            messagebox.showinfo("ChangeModel", "Сначала выберите провайдера в списке.")
+            messagebox.showinfo("Vibix ChangeModel", "Сначала выберите провайдера в списке.")
             return
         dlg = ProviderDialog(self.root, title=f"Редактировать провайдера «{prov['name']}»", initial=prov)
         if not dlg.result:
@@ -728,7 +742,7 @@ class ChangeModelApp:
         new = dlg.result
         api_key = new.pop("api_key", "")
         if new["id"] != prov["id"] and any(p["id"] == new["id"] for p in self.providers):
-            messagebox.showerror("ChangeModel", f"Провайдер с id '{new['id']}' уже есть.")
+            messagebox.showerror("Vibix ChangeModel", f"Провайдер с id '{new['id']}' уже есть.")
             return
         new["models"] = prov.get("models", [])
         # Мержим поверх старой записи, чтобы не потерять посторонние поля
@@ -751,7 +765,7 @@ class ChangeModelApp:
         prov = self.current_provider()
         if not prov:
             return
-        if not messagebox.askyesno("ChangeModel", f"Удалить провайдера «{prov['name']}»?"):
+        if not messagebox.askyesno("Vibix ChangeModel", f"Удалить провайдера «{prov['name']}»?"):
             return
         ids = {m["id"] for m in prov.get("models", [])}
         self.providers.remove(prov)
@@ -763,14 +777,14 @@ class ChangeModelApp:
     def add_model(self) -> None:
         prov = self.current_provider()
         if not prov:
-            messagebox.showinfo("ChangeModel", "Сначала выберите провайдера.")
+            messagebox.showinfo("Vibix ChangeModel", "Сначала выберите провайдера.")
             return
         dlg = ModelDialog(self.root, title="Новая модель")
         if not dlg.result:
             return
         m = dlg.result
         if any(mm["id"] == m["id"] for mm in prov.get("models", [])):
-            messagebox.showerror("ChangeModel", "Такая модель уже есть у этого провайдера.")
+            messagebox.showerror("Vibix ChangeModel", "Такая модель уже есть у этого провайдера.")
             return
         prov.setdefault("models", []).append(m)
         self.save_providers()
@@ -779,11 +793,11 @@ class ChangeModelApp:
     def edit_model(self) -> None:
         prov = self.current_provider()
         if not prov:
-            messagebox.showinfo("ChangeModel", "Сначала выберите провайдера.")
+            messagebox.showinfo("Vibix ChangeModel", "Сначала выберите провайдера.")
             return
         sel = self.models_list.curselection()
         if not sel:
-            messagebox.showinfo("ChangeModel", "Сначала выберите модель в списке.")
+            messagebox.showinfo("Vibix ChangeModel", "Сначала выберите модель в списке.")
             return
         models = prov.get("models", [])
         midx = sel[0]
@@ -795,7 +809,7 @@ class ChangeModelApp:
             return
         new = dlg.result
         if any(i != midx and mm["id"] == new["id"] for i, mm in enumerate(models)):
-            messagebox.showerror("ChangeModel", "Такая модель уже есть у этого провайдера.")
+            messagebox.showerror("Vibix ChangeModel", "Такая модель уже есть у этого провайдера.")
             return
         if m["id"] == self.default_model() and new["id"] != m["id"]:
             self._default_model = new["id"]
@@ -815,7 +829,7 @@ class ChangeModelApp:
         if midx >= len(models):
             return
         m = models[midx]
-        if not messagebox.askyesno("ChangeModel", f"Удалить модель «{m['name']}»?"):
+        if not messagebox.askyesno("Vibix ChangeModel", f"Удалить модель «{m['name']}»?"):
             return
         del models[midx]
         if m["id"] == self.default_model():
@@ -827,10 +841,10 @@ class ChangeModelApp:
         """Загружает каталог провайдера и добавляет выбранные модели."""
         prov = self.current_provider()
         if not prov:
-            messagebox.showinfo("ChangeModel", "Сначала выберите провайдера.")
+            messagebox.showinfo("Vibix ChangeModel", "Сначала выберите провайдера.")
             return
         if prov.get("kind") != "opencode-chat" and not prov.get("base_url"):
-            messagebox.showerror("ChangeModel", "У провайдера не указан Base URL.")
+            messagebox.showerror("Vibix ChangeModel", "У провайдера не указан Base URL.")
             return
         self.status_var.set("Загружаю каталог моделей...")
 
@@ -840,7 +854,7 @@ class ChangeModelApp:
             except Exception as e:
                 self._ui_call(lambda: (
                     self.status_var.set(""),
-                    messagebox.showerror("ChangeModel", f"Не удалось загрузить каталог:\n{e}"),
+                    messagebox.showerror("Vibix ChangeModel", f"Не удалось загрузить каталог:\n{e}"),
                 ))
                 return
 
@@ -851,7 +865,7 @@ class ChangeModelApp:
                 if current is None:
                     return
                 if not items:
-                    messagebox.showinfo("ChangeModel", "Каталог провайдера пуст.")
+                    messagebox.showinfo("Vibix ChangeModel", "Каталог провайдера пуст.")
                     return
                 dlg = CatalogPickerDialog(self.root, title=f"Каталог — {current['name']}", items=items)
                 if not dlg.result:
@@ -883,6 +897,8 @@ class ChangeModelApp:
             fresh = sum(1 for i in items if not i["added"])
 
             def apply() -> None:
+                self.free_items = items
+                self._refresh_free_panel()
                 if items:
                     text = f"Бесплатно сегодня: Zen — {zen}, OpenRouter — {orouter}"
                     if fresh:
@@ -907,23 +923,14 @@ class ChangeModelApp:
                 self.status_var.set("")
                 if not items:
                     if errors:
-                        messagebox.showinfo("ChangeModel", "Не удалось загрузить каталоги:\n" + "\n".join(errors))
+                        messagebox.showinfo("Vibix ChangeModel", "Не удалось загрузить каталоги:\n" + "\n".join(errors))
                     else:
-                        messagebox.showinfo("ChangeModel", "Бесплатных моделей не нашлось.")
+                        messagebox.showinfo("Vibix ChangeModel", "Бесплатных моделей не нашлось.")
                     return
                 dlg = FreeModelsDialog(self.root, title="Бесплатные модели сегодня", items=items, errors=errors)
                 if not dlg.result:
                     return
-                added = 0
-                for it in dlg.result:
-                    prov = next((p for p in self.providers if p.get("id") == it["provider_id"]), None)
-                    if prov is None:
-                        continue
-                    existing = {m["id"] for m in prov.get("models", [])}
-                    if it["id"] in existing:
-                        continue
-                    prov.setdefault("models", []).append({"id": it["id"], "name": it["name"]})
-                    added += 1
+                added = self._add_free_items(dlg.result)
                 if added:
                     self.save_providers()
                     self.refresh_models()
@@ -934,6 +941,52 @@ class ChangeModelApp:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _refresh_free_panel(self) -> None:
+        """Перерисовывает правую панель бесплатных моделей. Только отображение."""
+        try:
+            self.free_list.delete(0, tk.END)
+            for it in self.free_items:
+                self.free_list.insert(tk.END, FreeModelsDialog._line(it))
+            _paint_free_rows(self.free_list, self.free_items)
+        except Exception:
+            pass
+
+    def _add_free_items(self, chosen: list[dict]) -> int:
+        """Добавляет выбранные free-модели к их провайдерам. Возвращает число добавленных."""
+        added = 0
+        for it in chosen:
+            prov = next((p for p in self.providers if p.get("id") == it.get("provider_id")), None)
+            if prov is None:
+                continue
+            existing = {m["id"] for m in prov.get("models", [])}
+            if it["id"] in existing:
+                continue
+            prov.setdefault("models", []).append({"id": it["id"], "name": it["name"]})
+            added += 1
+        return added
+
+    def add_selected_free(self) -> None:
+        """Кнопка «Добавить» на панели «Бесплатно сегодня»."""
+        sel = self.free_list.curselection()
+        if not sel:
+            messagebox.showinfo("Vibix ChangeModel", "Отметьте модели в списке «Бесплатно сегодня».")
+            return
+        chosen = [self.free_items[i] for i in sel if i < len(self.free_items)]
+        if not chosen:
+            return
+        added = self._add_free_items(chosen)
+        if added:
+            self.save_providers()
+            self.refresh_models()
+            self.refresh_free_news()
+            self.status_var.set(f"Добавлено моделей: {added}")
+        else:
+            have = {p.get("id") for p in self.providers}
+            if any(it.get("provider_id") not in have for it in chosen):
+                messagebox.showinfo("Vibix ChangeModel", "Сначала добавьте нужного провайдера в список слева.")
+            else:
+                self.status_var.set("Выбранные модели уже добавлены")
+
     def show_about(self) -> None:
         """Окно «О программе»: версия, ссылки, проверка обновлений."""
         AboutDialog(self.root)
@@ -941,7 +994,7 @@ class ChangeModelApp:
     def set_default_model(self) -> None:
         sel = self.models_list.curselection()
         if not sel:
-            messagebox.showinfo("ChangeModel", "Сначала выберите модель в списке.")
+            messagebox.showinfo("Vibix ChangeModel", "Сначала выберите модель в списке.")
             return
         prov = self.current_provider()
         if not prov:
@@ -1195,18 +1248,31 @@ class CatalogPickerDialog:
     def on_add(self) -> None:
         sel = self.list.curselection()
         if not sel:
-            messagebox.showinfo("ChangeModel", "Отметьте модели в списке.", parent=self.top)
+            messagebox.showinfo("Vibix ChangeModel", "Отметьте модели в списке.", parent=self.top)
             return
         chosen = [self.filtered[i] for i in sel]
         compat = [it for it in chosen if not it["incompatible"]]
         skipped = len(chosen) - len(compat)
         if not compat:
-            messagebox.showinfo("ChangeModel", "Все выбранные модели несовместимы с прокси.", parent=self.top)
+            messagebox.showinfo("Vibix ChangeModel", "Все выбранные модели несовместимы с прокси.", parent=self.top)
             return
         if skipped:
-            messagebox.showinfo("ChangeModel", f"Несовместимые модели пропущены: {skipped}.", parent=self.top)
+            messagebox.showinfo("Vibix ChangeModel", f"Несовместимые модели пропущены: {skipped}.", parent=self.top)
         self.result = compat
         self.top.destroy()
+
+
+def _paint_free_rows(lst: tk.Listbox, items: list[dict]) -> None:
+    """Подсветка строк бесплатных моделей: фон по провайдеру
+    (Zen — голубой, OpenRouter — зелёный). Новые помечены текстом [новая]."""
+    for i, it in enumerate(items):
+        tint = _PROVIDER_TINTS.get(it.get("provider_id", ""))
+        if not tint:
+            continue
+        try:
+            lst.itemconfig(i, background=tint)
+        except Exception:
+            pass
 
 
 class FreeModelsDialog:
@@ -1274,7 +1340,8 @@ class FreeModelsDialog:
     @staticmethod
     def _line(it: dict) -> str:
         prefix = "[новая] " if not it["added"] else ""
-        return f"{prefix}{it['name']} — {it['id']} · {it['source']}"
+        tag = _PROVIDER_SHORT.get(it.get("provider_id", ""), it.get("source", ""))
+        return f"{prefix}[{tag}] {it['name']} — {it['id']}"
 
     def _apply_filter(self) -> None:
         q = self.ent_search.get().strip().lower()
@@ -1285,13 +1352,14 @@ class FreeModelsDialog:
         self.list.delete(0, tk.END)
         for it in self.filtered:
             self.list.insert(tk.END, self._line(it))
+        _paint_free_rows(self.list, self.filtered)
         fresh = sum(1 for it in self.filtered if not it["added"])
         self.count_var.set(f"Моделей: {len(self.filtered)} из {len(self.items)} · новых: {fresh}")
 
     def on_add(self) -> None:
         sel = self.list.curselection()
         if not sel:
-            messagebox.showinfo("ChangeModel", "Отметьте модели в списке.", parent=self.top)
+            messagebox.showinfo("Vibix ChangeModel", "Отметьте модели в списке.", parent=self.top)
             return
         self.result = [self.filtered[i] for i in sel]
         self.top.destroy()
@@ -1343,7 +1411,7 @@ def fetch_latest_release(timeout: int = 10) -> tuple[str | None, str | None]:
     try:
         req = urllib.request.Request(
             LATEST_RELEASE_API,
-            headers={"User-Agent": "ChangeModel", "Accept": "application/vnd.github+json"},
+            headers={"User-Agent": "Vibix ChangeModel", "Accept": "application/vnd.github+json"},
         )
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.load(r)
@@ -1364,13 +1432,13 @@ class AboutDialog:
 
     def __init__(self, parent: tk.Tk) -> None:
         self.top = tk.Toplevel(parent)
-        self.top.title(f"О программе — ChangeModel {APP_VERSION}")
+        self.top.title(f"О программе — Vibix ChangeModel {APP_VERSION}")
         self.top.grab_set()
         self.top.transient(parent)
 
         body = ttk.Frame(self.top, padding=16)
         body.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(body, text=f"ChangeModel {APP_VERSION}", style="Title.TLabel").pack(anchor=tk.W)
+        ttk.Label(body, text=f"Vibix ChangeModel {APP_VERSION}", style="Title.TLabel").pack(anchor=tk.W)
         ttk.Label(
             body,
             text="Окно управления моделями для Codex и локальный прокси.",
