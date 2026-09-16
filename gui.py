@@ -38,13 +38,16 @@ else:
 BASE_DIR = APP_DIR
 PROVIDERS_FILE = BASE_DIR / "providers.json"
 
-BASE_MODEL = "gpt-5.6-luna"
+# Порт прокси: один источник для health-check'ов и кнопок управления.
+# Должен совпадать с PROXY_PORT прокси и base_url, который пишет generator.
+PROXY_PORT = int(os.environ.get("PROXY_PORT", "4096"))
+PROXY_HTTP = f"http://127.0.0.1:{PROXY_PORT}"
 
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 GITHUB_REPO = "lana-info/ChangeModel"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases"
-LATEST_RELEASE_API = f"https://api.github.com/{GITHUB_REPO}/releases/latest"
+LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 
 # ---------- внешний вид ----------
@@ -154,13 +157,36 @@ def _fix_entry_keys(root: tk.Tk) -> None:
 
 
 def ensure_data_file() -> None:
-    """При сборке в exe: если рядом с exe нет providers.json, копируем встроенный."""
-    if getattr(sys, "frozen", False) and not PROVIDERS_FILE.exists():
-        src = Path(getattr(sys, "_MEIPASS", BASE_DIR)) / "providers.json"
+    """Если providers.json отсутствует, создаём его из шаблона
+    providers.example.json (в exe — из встроенных ресурсов, в исходниках —
+    из корня проекта). Работает и в frozen-, и в исходном режиме."""
+    if PROVIDERS_FILE.exists():
+        return
+    if getattr(sys, "frozen", False):
+        src = Path(getattr(sys, "_MEIPASS", BASE_DIR)) / "providers.example.json"
+    else:
+        src = BASE_DIR / "providers.example.json"
+    try:
         if src.exists():
             import shutil
 
             shutil.copy2(src, PROVIDERS_FILE)
+        else:
+            PROVIDERS_FILE.write_text('{\n  "default_model": "",\n  "providers": []\n}\n', encoding="utf-8")
+    except OSError:
+        pass
+
+
+def recover_data_file() -> bool:
+    """Восстанавливает нечитаемый providers.json из шаблона; битая копия
+    сохраняется рядом (providers.json.broken-<дата-время>)."""
+    try:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        PROVIDERS_FILE.replace(PROVIDERS_FILE.with_name(f"providers.json.broken-{stamp}"))
+    except OSError:
+        pass
+    ensure_data_file()
+    return PROVIDERS_FILE.exists()
 
 
 def load_data() -> dict:
@@ -368,6 +394,10 @@ def _set_codex_token() -> None:
     требует, чтобы переменная существовала. Прокси токены не проверяет,
     поэтому достаточно постоянного плейсхолдера — настоящие ключи живут
     только в proxy/.env."""
+    if not sys.platform.startswith("win"):
+        # setx существует только в Windows; на macOS/Linux переменную
+        # пользователь задаёт вручную (см. README), здесь просто не мешаем.
+        return
     try:
         subprocess.run(
             ["setx", "CHANGE_MODEL_API_KEY", "changemodel-local"],
@@ -382,6 +412,27 @@ def _set_codex_token() -> None:
             pass
 
 
+def _migrate_env_key(old_key: str, new_key: str, api_key: str) -> None:
+    """Сохраняет API-ключ провайдера из диалога редактирования.
+
+    При смене имени переменной (env_key) переносит уже сохранённый ключ под
+    новое имя — иначе провайдер молча потерял бы авторизацию (старый ключ
+    остался бы под старым именем, а нового не было бы вовсе).
+    api_key — новое значение из диалога (пусто = не менять).
+    """
+    if old_key != new_key:
+        value = api_key or _read_env_key(old_key)
+        if value and new_key:
+            _save_env_key(new_key, value)
+        if old_key:
+            _save_env_key(old_key, "")  # убрать строку со старым именем
+        if value:
+            _set_codex_token()
+    elif api_key:
+        _save_env_key(new_key, api_key)
+        _set_codex_token()
+
+
 class ChangeModelApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -394,15 +445,36 @@ class ChangeModelApp:
         self.free_shown: list[dict] = []
         self._status_thread: threading.Thread | None = None
         ensure_data_file()
-        self.load_providers()
+        try:
+            self.load_providers()
+        except Exception as e:
+            # Битый providers.json не должен молча убивать окно (в exe
+            # console=False traceback никто не увидит) — предлагаем восстановить.
+            if not messagebox.askyesno(
+                "Vibix ChangeModel",
+                f"Файл providers.json повреждён и не читается:\n{e}\n\n"
+                "Восстановить его из шаблона?\n(битая копия будет сохранена рядом)",
+            ):
+                raise SystemExit(1)
+            if not recover_data_file():
+                messagebox.showerror("Vibix ChangeModel", "Не удалось восстановить providers.json.")
+                raise SystemExit(1)
+            self.load_providers()
 
         _apply_visual_theme(root)
         _fix_entry_keys(root)
         self._build_layout()
         self.refresh_providers()
         self.update_status()
-        root.bind("<FocusIn>", lambda _e: self.update_status())
+        root.bind("<FocusIn>", self._on_focus_in)
         self.refresh_free_news()
+
+    def _on_focus_in(self, event) -> None:
+        # <FocusIn> срабатывает и при переходе фокуса между виджетами окна
+        # (bindtags включают toplevel) — обновляем статус только при
+        # активизации самого окна, а не на каждый клик по полям.
+        if event.widget is self.root:
+            self.update_status()
 
     def start_proxy(self) -> None:
         """Запускает прокси в фоне, если он ещё не работает."""
@@ -410,7 +482,7 @@ class ChangeModelApp:
         def work() -> None:
             running = False
             try:
-                with urllib.request.urlopen("http://127.0.0.1:4096/healthz", timeout=2) as r:
+                with urllib.request.urlopen(f"{PROXY_HTTP}/healthz", timeout=2) as r:
                     running = r.status == 200
             except Exception:
                 pass
@@ -441,7 +513,7 @@ class ChangeModelApp:
                 for _ in range(20):  # ждём готовности до 10 секунд
                     time.sleep(0.5)
                     try:
-                        with urllib.request.urlopen("http://127.0.0.1:4096/healthz", timeout=1) as r:
+                        with urllib.request.urlopen(f"{PROXY_HTTP}/healthz", timeout=1) as r:
                             if r.status == 200:
                                 running = True
                                 break
@@ -468,7 +540,7 @@ class ChangeModelApp:
 
         def work() -> None:
             try:
-                with urllib.request.urlopen("http://127.0.0.1:4096/healthz", timeout=2) as r:
+                with urllib.request.urlopen(f"{PROXY_HTTP}/healthz", timeout=2) as r:
                     if r.status != 200:
                         self._ui_call(lambda: self.status_var.set("Прокси и не запущен"))
                         return
@@ -480,7 +552,7 @@ class ChangeModelApp:
             #    временную папку _MEI.
             stopped = False
             try:
-                req = urllib.request.Request("http://127.0.0.1:4096/shutdown", data=b"", method="POST")
+                req = urllib.request.Request(f"{PROXY_HTTP}/shutdown", data=b"", method="POST")
                 with urllib.request.urlopen(req, timeout=2) as r:
                     if r.status == 200:
                         for _ in range(10):
@@ -581,14 +653,17 @@ class ChangeModelApp:
     # ---------- data ----------
     def load_providers(self) -> list[dict]:
         data = load_data()
-        self.providers = data["providers"]
+        self.providers = data.get("providers", [])
         self._default_model = data.get("default_model", "")
         return self.providers
 
     def save_providers(self) -> None:
         # Сохраняем поверх загруженного документа, чтобы не затереть
         # посторонние ключи верхнего уровня (base_instructions и др.).
-        data = load_data()
+        try:
+            data = load_data()
+        except Exception:
+            data = {}  # файл повреждён — перезаписываем текущим состоянием
         data["default_model"] = self.default_model()
         data["providers"] = self.providers
         save_data(data)
@@ -758,7 +833,7 @@ class ChangeModelApp:
 
     def is_proxy_running(self) -> bool:
         try:
-            with urllib.request.urlopen("http://127.0.0.1:4096/healthz", timeout=2) as r:
+            with urllib.request.urlopen(f"{PROXY_HTTP}/healthz", timeout=2) as r:
                 return r.status == 200
         except Exception:
             return False
@@ -771,7 +846,7 @@ class ChangeModelApp:
             return None
         with open(cfg, "rb") as f:
             d = tomllib.load(f)
-        if d.get("model") == BASE_MODEL and not d.get("model_provider"):
+        if d.get("model") == generator.BASE_MODEL and not d.get("model_provider"):
             return None
         return f"{d.get('model_provider', '?')} / {d.get('model')}"
 
@@ -830,12 +905,7 @@ class ChangeModelApp:
         idx = self.current_provider_index()
         self.providers[idx] = merged
         self.save_providers()
-        if api_key:
-            old_env_key = prov.get("env_key", "")
-            if old_env_key and old_env_key != merged.get("env_key", ""):
-                _save_env_key(old_env_key, "")  # убрать строку со старым именем
-            _save_env_key(merged.get("env_key", ""), api_key)
-            _set_codex_token()
+        _migrate_env_key(prov.get("env_key", ""), merged.get("env_key", ""), api_key)
         self.providers_list.selection_set(idx)
         self.refresh_models()
 
@@ -1148,7 +1218,7 @@ class ProviderDialog:
                 env.delete(0, tk.END)
                 env.insert(0, "OPENROUTER_API_KEY")
             base = self.entries["base_url"]
-            if base.get().strip() in ("", "http://127.0.0.1:4096/v1"):
+            if base.get().strip() in ("", f"{PROXY_HTTP}/v1"):
                 base.delete(0, tk.END)
                 base.insert(0, "https://openrouter.ai/api/v1")
         else:

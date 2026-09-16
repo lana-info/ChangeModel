@@ -29,7 +29,10 @@ except ImportError:
     tomlkit = None
 
 BASE_MODEL = "gpt-5.6-luna"
-PROXY_BASE_URL = "http://127.0.0.1:4096/v1"
+# Порт прокси берём из PROXY_PORT, как и сам прокси/GUI, — иначе при смене
+# порта Codex смотрел бы не туда, куда слушает прокси.
+PROXY_PORT = os.environ.get("PROXY_PORT", "4096")
+PROXY_BASE_URL = f"http://127.0.0.1:{PROXY_PORT}/v1"
 
 
 def project_dir() -> str:

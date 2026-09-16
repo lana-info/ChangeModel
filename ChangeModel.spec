@@ -6,7 +6,9 @@ import sys
 
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('providers.json', '.')]
+# В exe встраивается ШАБЛОН: рабочий providers.json создаётся рядом с exe
+# из providers.example.json при первом запуске (gui.ensure_data_file).
+datas = [('providers.example.json', '.')]
 binaries = []
 hiddenimports = ['proxy.app', 'models_data', 'generator']
 tmp_ret = collect_all('uvicorn')

@@ -10,7 +10,12 @@
 3. passthrough без base_url возвращает 400, а не падает.
 4. _check_auth: Host + Origin (CSRF), IPv6-localhost; /shutdown защищён.
 5. generator: профиль base не удаляет чужие model_providers; фолбэк модели
-   при пустом default_model.
+   при пустом default_model; тесты не зависят от providers.json репозитория.
+6. Сетевая ошибка до апстрима — 502 с JSON-ошибкой (не HTML-500); обрыв
+   стрима посреди ответа — событие response.failed с частичным текстом.
+7. Неизвестный kind провайдера — 400, а не молчаливый passthrough.
+8. GUI: смена env_key переносит ключ под новое имя; providers.json создаётся
+   из providers.example.json.
 """
 from __future__ import annotations
 
@@ -22,6 +27,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 
+import httpx
 from starlette.requests import Request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -572,6 +578,152 @@ def test_shutdown_endpoint_requires_local_host() -> None:
     assert resp.status_code == 500
 
 
+def test_unknown_kind_returns_400() -> None:
+    """Опечатка в kind провайдера — понятная 400, а не молчаливый passthrough."""
+    provider = {
+        "id": "typo",
+        "name": "Typo",
+        "kind": "pass-through",  # опечатка
+        "base_url": "http://upstream.example/v1",
+        "env_key": "K",
+        "models": [{"id": "m1", "name": "M1"}],
+    }
+    with _Patch(load_providers=lambda: [provider], get_setting=lambda name: "k"):
+        resp = asyncio.run(app_module.create_response(_make_request({"model": "m1"})))
+    assert resp.status_code == 400
+    assert "unknown kind" in json.loads(resp.body)["error"]["message"]
+
+
+class _RaisingHttpClient:
+    """Клиент, у которого сеть до апстрима недоступна."""
+
+    def build_request(self, method, url, headers=None, json=None):
+        return {"method": method, "url": url, "headers": headers, "json": json}
+
+    async def send(self, req, stream=False):
+        raise httpx.ConnectError("connection refused")
+
+    async def post(self, url, headers=None, json=None):
+        raise httpx.ConnectError("connection refused")
+
+
+def test_upstream_network_error_returns_502_json() -> None:
+    """Провайдер лёг: прокси отдаёт 502 с JSON-ошибкой, а не HTML-500."""
+    with _Patch(
+        load_providers=lambda: [ZEN_PROVIDER],
+        get_setting=lambda name: "",
+        http_client=lambda: _RaisingHttpClient(),
+    ):
+        resp = asyncio.run(app_module.create_response(_make_request({"model": "zen-model"})))
+    assert resp.status_code == 502
+    body = json.loads(resp.body)
+    assert body["error"]["type"] == "invalid_request_error"
+    assert "Upstream request failed" in body["error"]["message"]
+
+
+def test_stream_open_network_error_returns_502_json() -> None:
+    """То же для стриминга: ошибка сети на открытии апстрима — 502 JSON."""
+    with _Patch(
+        load_providers=lambda: [ZEN_PROVIDER],
+        get_setting=lambda name: "",
+        http_client=lambda: _RaisingHttpClient(),
+    ):
+        resp = asyncio.run(app_module.create_response(_make_request({"model": "zen-model", "stream": True})))
+    assert resp.status_code == 502
+    assert "Upstream request failed" in json.loads(resp.body)["error"]["message"]
+
+
+class _InterruptibleStreamUpstream:
+    """Стрим, который обрывается посреди передачи."""
+
+    status_code = 200
+
+    async def aiter_lines(self):
+        yield "data: " + json.dumps({"choices": [{"delta": {"content": "частичный"}}]})
+        raise httpx.ReadError("connection reset by peer")
+
+    async def aclose(self):
+        pass
+
+
+def test_stream_interrupted_emits_response_failed() -> None:
+    """Обрыв апстрима посреди стрима: клиент получает response.failed
+    с частичным текстом, а не молчаливо оборванный поток."""
+    client = _FakeHttpClient(_InterruptibleStreamUpstream())
+    with _Patch(
+        load_providers=lambda: [ZEN_PROVIDER],
+        get_setting=lambda name: "",
+        http_client=lambda: client,
+    ):
+        resp = asyncio.run(app_module.create_response(_make_request({"model": "zen-model", "stream": True})))
+        body = _collect_stream(resp)
+
+    events = _sse_events(body)
+    failed = [e for e in events if e["type"] == "response.failed"]
+    assert failed, "ожидалось событие response.failed"
+    assert failed[0]["response"]["status"] == "failed"
+    assert failed[0]["response"]["error"]["code"] == "upstream_error"
+    assert failed[0]["response"]["output_text"] == "частичный"
+    # response.completed при обрыве не отправляется
+    assert not [e for e in events if e["type"] == "response.completed"]
+
+
+def test_gui_migrate_env_key_renames_key() -> None:
+    """Смена env_key переносит сохранённый ключ под новое имя."""
+    import gui
+
+    with tempfile.TemporaryDirectory() as td:
+        proxy_dir = Path(td) / "proxy"
+        proxy_dir.mkdir()
+        env_file = proxy_dir / ".env"
+        env_file.write_text("OLD_KEY=sk-secret\nOTHER=keep-me\n", encoding="utf-8")
+        orig_base = gui.BASE_DIR
+        gui.BASE_DIR = Path(td)
+        try:
+            # 1) переименование без нового ключа: значение переезжает
+            gui._migrate_env_key("OLD_KEY", "NEW_KEY", "")
+            text = env_file.read_text(encoding="utf-8")
+            assert "NEW_KEY=sk-secret" in text
+            assert "OLD_KEY" not in text
+            assert "OTHER=keep-me" in text
+            # 2) переименование с новым ключом: пишется новое значение
+            gui._migrate_env_key("NEW_KEY", "THIRD_KEY", "sk-fresh")
+            text = env_file.read_text(encoding="utf-8")
+            assert "THIRD_KEY=sk-fresh" in text
+            assert "NEW_KEY" not in text
+            # 3) то же имя + новый ключ: просто обновление
+            gui._migrate_env_key("THIRD_KEY", "THIRD_KEY", "sk-updated")
+            text = env_file.read_text(encoding="utf-8")
+            assert "THIRD_KEY=sk-updated" in text
+        finally:
+            gui.BASE_DIR = orig_base
+
+
+def test_gui_ensure_data_file_from_example() -> None:
+    """providers.json создаётся из providers.example.json при первом запуске."""
+    import gui
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        (td_path / "providers.example.json").write_text(
+            '{"default_model": "tpl-model", "providers": []}', encoding="utf-8"
+        )
+        orig_file, orig_base = gui.PROVIDERS_FILE, gui.BASE_DIR
+        gui.PROVIDERS_FILE = td_path / "providers.json"
+        gui.BASE_DIR = td_path
+        try:
+            gui.ensure_data_file()
+            assert gui.PROVIDERS_FILE.exists()
+            data = json.loads(gui.PROVIDERS_FILE.read_text(encoding="utf-8"))
+            assert data["default_model"] == "tpl-model"
+            # повторный вызов не затирает существующий файл
+            gui.PROVIDERS_FILE.write_text('{"default_model": "user", "providers": []}', encoding="utf-8")
+            gui.ensure_data_file()
+            assert json.loads(gui.PROVIDERS_FILE.read_text(encoding="utf-8"))["default_model"] == "user"
+        finally:
+            gui.PROVIDERS_FILE, gui.BASE_DIR = orig_file, orig_base
+
+
 # ---------------------------------------------------------------- generator tests
 CONFIG_WITH_FOREIGN = """\
 model = "old-model"
@@ -633,13 +785,29 @@ def test_generator_changemodel_keeps_foreign_providers() -> None:
     with tempfile.TemporaryDirectory() as td:
         cfg = Path(td) / "config.toml"
         cfg.write_text(CONFIG_WITH_FOREIGN, encoding="utf-8")
-        ok, message = generator.write_config("changemodel", str(cfg))
+        # свой providers.json: тест не должен зависеть от конфига в репозитории
+        providers = Path(td) / "providers.json"
+        providers.write_text(
+            json.dumps(
+                {
+                    "default_model": "test-default",
+                    "providers": [{"id": "p", "name": "P", "kind": "passthrough", "base_url": "https://x/v1", "env_key": "K", "models": [{"id": "m1", "name": "M1"}]}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        orig = generator.PROVIDERS_FILE
+        generator.PROVIDERS_FILE = str(providers)
+        try:
+            ok, message = generator.write_config("changemodel", str(cfg))
+        finally:
+            generator.PROVIDERS_FILE = orig
         assert ok, message
         data = tomllib.loads(cfg.read_text(encoding="utf-8"))
         assert data["model_provider"] == "changemodel"
         assert "changemodel" in data["model_providers"]
         assert "openrouter" in data["model_providers"]
-        assert data["model"] == generator.default_model()
+        assert data["model"] == "test-default"
 
 
 def test_generator_model_fallback() -> None:

@@ -13,7 +13,7 @@
 proxy/app.py
 proxy/run_proxy.py
 models_data.py
-providers.json
+providers.example.json   # или готовый providers.json пользователя
 generator.py
 ```
 
@@ -42,7 +42,9 @@ ss -ltn | grep 4096 || echo "порт 4096 свободен"
 
 ```bash
 sudo mkdir -p /opt/changemodel
-sudo cp proxy/app.py proxy/run_proxy.py models_data.py providers.json generator.py /opt/changemodel/
+sudo cp proxy/app.py proxy/run_proxy.py models_data.py generator.py /opt/changemodel/
+# рабочий конфиг: готовый providers.json, если есть, иначе из шаблона
+if [ -f providers.json ]; then sudo cp providers.json /opt/changemodel/providers.json; else sudo cp providers.example.json /opt/changemodel/providers.json; fi
 sudo chown -R "$USER":"$USER" /opt/changemodel
 ```
 

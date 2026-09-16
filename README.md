@@ -29,7 +29,7 @@ OpenRouter, GMI Cloud, Agent Router и других, — а не только в
 ### Готовый exe (Windows)
 
 1. Скопируйте папку с `ChangeModel.exe` куда угодно.
-2. Запустите — рядом появится `providers.json` (создастся сам).
+2. Запустите — рядом появится `providers.json` (создастся сам из встроенного шаблона).
 3. Нажмите **«Добавить провайдера»**, впишите Base URL и API-ключ.
 4. Добавьте модели (вручную или кнопкой **«Подобрать»** из каталога провайдера).
 5. Выберите модель → **«Сделать моделью по умолчанию»** → **«Запустить прокси»**.
@@ -42,10 +42,14 @@ OpenRouter, GMI Cloud, Agent Router и других, — а не только в
 git clone https://github.com/lana-info/ChangeModel.git
 cd ChangeModel
 python -m venv .venv && .venv/bin/pip install -r proxy/requirements.txt tomlkit   # Windows: .venv\Scripts\pip
+cp providers.example.json providers.json   # рабочий конфиг (в git не входит)
 cp proxy/.env.example proxy/.env    # впишите свои ключи
 python gui.py                       # окно (или python proxy/run_proxy.py — только прокси)
 python generator.py --profile changemodel   # переключить Codex на прокси
 ```
+
+`python gui.py` при первом запуске сам создаст `providers.json` из шаблона,
+если вы его ещё не скопировали.
 
 Откат Codex на встроенные модели: `python generator.py --profile base`.
 
@@ -125,8 +129,18 @@ python proxy/test_regressions.py    # регрессионные тесты пр
 
 - Прокси слушает только `127.0.0.1`; запросы с чужим `Host`/`Origin`
   (CSRF/DNS-rebinding из браузера) отклоняются.
-- Ключи не логируются и не попадают в конфиги; файл `proxy/.env` исключён
-  из репозитория (см. `.gitignore` и шаблон `proxy/.env.example`).
+- Токена у прокси нет: обратиться к нему (включая трату ключей провайдеров
+  и `/shutdown`) может **любой локальный процесс** — осознанный компромисс
+  ради простоты. Проверка `Host`/`Origin` закрывает атаки из браузера,
+  но не локальные программы; не запускайте прокси на машинах, которым не доверяете.
+- Ключи не логируются и не попадают в конфиги; файлы `proxy/.env` и
+  `providers.json` исключены из репозитория (см. `.gitignore` и шаблоны
+  `proxy/.env.example`, `providers.example.json`).
+
+Замечание про `CHANGE_MODEL_API_KEY`: Codex требует, чтобы такая переменная
+окружения существовала (прокси её не проверяет). На Windows GUI прописывает
+плейсхолдер сам (`setx`); на macOS/Linux добавьте вручную, например в
+`~/.zshrc`: `export CHANGE_MODEL_API_KEY=changemodel-local`.
 
 ## Лицензия
 

@@ -62,7 +62,8 @@ async def _lifespan(_app: FastAPI):
 app = FastAPI(title="ChangeModel proxy", lifespan=_lifespan)
 
 PORT = int(os.environ.get("PROXY_PORT", "4096"))
-OPENCODE_UPSTREAM = os.environ.get("OPENCODE_GO_BASE_URL", "https://opencode.ai/zen/go/v1")
+# Апстрим по умолчанию — единая константа из models_data (ею же пользуется GUI).
+OPENCODE_UPSTREAM = os.environ.get("OPENCODE_GO_BASE_URL", models_data.UPSTREAM_BASE_URL)
 
 # Апстримы OpenCode требуют заголовок x-opencode-session для маршрутизации:
 # без него Go отвечает 400 MissingSessionID, а free-модели Zen — ошибкой
@@ -103,21 +104,24 @@ def _read_env_file(path: Path) -> dict:
     return data
 
 
-# Кэш proxy/.env по mtime: новые ключи подхватываются без перезапуска прокси.
-_env_cache: tuple[float | None, dict] = (None, {})
+# Кэш proxy/.env по (mtime_ns, размер): новые ключи подхватываются без
+# перезапуска прокси. Пара значений надёжнее одного mtime: правки в пределах
+# одной гранулярности mtime (FAT/сетевые ФС) не пройдут незамеченными.
+_env_cache: tuple[tuple[int, int] | None, dict] = (None, {})
 
 
 def _env_from_file(path: Path | None = None) -> dict:
     global _env_cache
     path = path or Path(project_dir()) / "proxy" / ".env"
     try:
-        mtime = path.stat().st_mtime
+        st = path.stat()
+        stamp = (st.st_mtime_ns, st.st_size)
     except OSError:
         return {}
-    if _env_cache[0] == mtime:
+    if _env_cache[0] == stamp:
         return _env_cache[1]
     data = _read_env_file(path)
-    _env_cache = (mtime, data)
+    _env_cache = (stamp, data)
     return data
 
 
@@ -134,18 +138,19 @@ _load_env_file()
 
 
 # ---------------------------------------------------------------- providers
-# Кэш providers.json по mtime: файл перечитывается только после изменения,
-# а не при каждом запросе (_check_auth, find_model, base_instructions).
-_data_cache: tuple[float | None, dict] = (None, {})
+# Кэш providers.json по (mtime_ns, размер): файл перечитывается только после
+# изменения, а не при каждом запросе (_check_auth, find_model, base_instructions).
+_data_cache: tuple[tuple[int, int] | None, dict] = (None, {})
 
 
 def load_data() -> dict:
     global _data_cache
     try:
-        mtime = os.path.getmtime(PROVIDERS_FILE)
+        st = os.stat(PROVIDERS_FILE)
+        stamp = (st.st_mtime_ns, st.st_size)
     except OSError:
         return _data_cache[1]  # файл недоступен — отдаём последний хороший конфиг
-    if _data_cache[0] == mtime and _data_cache[1]:
+    if _data_cache[0] == stamp and _data_cache[1]:
         return _data_cache[1]
     try:
         with open(PROVIDERS_FILE, encoding="utf-8") as f:
@@ -153,7 +158,7 @@ def load_data() -> dict:
     except Exception:
         log.exception("failed to load providers.json")
         return _data_cache[1]
-    _data_cache = (mtime, data)
+    _data_cache = (stamp, data)
     return data
 
 
@@ -282,9 +287,14 @@ async def _passthrough(url: str, key: str, body: dict) -> JSONResponse | Streami
         # Открываем апстрим до создания ответа, чтобы отдать клиенту
         # настоящий HTTP-статус ошибки, а не «SSE с ошибкой» со статусом 200.
         req = client.build_request("POST", url, headers=headers, json=body)
-        up = await client.send(req, stream=True)
+        try:
+            up = await client.send(req, stream=True)
+        except httpx.HTTPError as e:
+            # сеть до апстрима недоступна — JSON-ошибка вместо HTML-500
+            return JSONResponse(_error_body(502, f"Upstream request failed: {e}"), status_code=502)
         if up.status_code != 200:
             raw = await up.aread()
+            await up.aclose()
             try:
                 payload = json.loads(raw)
             except Exception:
@@ -302,7 +312,10 @@ async def _passthrough(url: str, key: str, body: dict) -> JSONResponse | Streami
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    resp = await client.post(url, headers=headers, json=body)
+    try:
+        resp = await client.post(url, headers=headers, json=body)
+    except httpx.HTTPError as e:
+        return JSONResponse(_error_body(502, f"Upstream request failed: {e}"), status_code=502)
     try:
         payload = resp.json()
     except Exception:
@@ -524,11 +537,15 @@ def _upstream_headers(key: str) -> dict:
 
 
 async def _handle_non_stream(chat: dict, upstream: str, key: str) -> JSONResponse:
-    resp = await http_client().post(
-        f"{upstream}/chat/completions",
-        headers=_upstream_headers(key),
-        json=chat,
-    )
+    try:
+        resp = await http_client().post(
+            f"{upstream}/chat/completions",
+            headers=_upstream_headers(key),
+            json=chat,
+        )
+    except httpx.HTTPError as e:
+        # сеть до апстрима недоступна — JSON-ошибка вместо HTML-500 от FastAPI
+        return JSONResponse(_error_body(502, f"Upstream request failed: {e}"), status_code=502)
     if resp.status_code != 200:
         try:
             up = resp.json()
@@ -574,9 +591,13 @@ async def _handle_stream(chat: dict, upstream: str, key: str) -> StreamingRespon
         headers=_upstream_headers(key),
         json=chat,
     )
-    up = await http_client().send(req, stream=True)
+    try:
+        up = await http_client().send(req, stream=True)
+    except httpx.HTTPError as e:
+        return JSONResponse(_error_body(502, f"Upstream request failed: {e}"), status_code=502)
     if up.status_code != 200:
         raw = await up.aread()
+        await up.aclose()
         try:
             up_json = json.loads(raw)
             msg = (up_json.get("error") or {}).get("message") or raw.decode("utf-8", "replace")
@@ -605,10 +626,24 @@ async def _handle_stream(chat: dict, upstream: str, key: str) -> StreamingRespon
             yield _event({"type": "response.created", "response": base_resp("in_progress")})
             yield _event({"type": "response.in_progress", "response": base_resp("in_progress")})
 
+            # Обрыв соединения с апстримом посреди стрима не должен рвать
+            # SSE молча: оборачиваем итератор, чтобы отдать клиенту
+            # response.failed с частичным результатом (см. ниже).
+            stream_error: Exception | None = None
+
+            async def safe_lines() -> AsyncIterator[str]:
+                nonlocal stream_error
+                try:
+                    async for line in up.aiter_lines():
+                        yield line
+                except Exception as e:
+                    log.warning("upstream stream interrupted: %s", e)
+                    stream_error = e
+
             # SSE-событие может быть разбито на несколько строк data: —
             # по спецификации их значения склеиваются через \n.
             pending = ""
-            async for line in up.aiter_lines():
+            async for line in safe_lines():
                 if not line.startswith("data:"):
                     if line == "":
                         pending = ""
@@ -765,6 +800,16 @@ async def _handle_stream(chat: dict, upstream: str, key: str) -> StreamingRespon
                     # не выходим из цикла: после finish апстрим присылает
                     # ещё кадр с расходом токенов (include_usage)
 
+            if stream_error is not None:
+                # честный response.failed вместо молчаливого обрыва потока
+                failed = base_resp("failed")
+                failed["output"] = output_items
+                failed["output_text"] = "".join(text_parts)
+                failed["error"] = {"code": "upstream_error", "message": str(stream_error)[:500]}
+                yield _event({"type": "response.failed", "response": failed})
+                yield "data: [DONE]\n\n"
+                return
+
             final = {
                 "id": response_id,
                 "object": "response",
@@ -805,7 +850,8 @@ async def create_response(request: Request):
     if provider is None:
         return JSONResponse(_error_body(404, f"Unknown model: {body['model']}"), status_code=404)
 
-    if provider.get("kind") == "opencode-chat":
+    kind = provider.get("kind", "")
+    if kind == "opencode-chat":
         chat = _responses_to_chat(body)
         # base_url провайдера позволяет указать другой апстрим (например,
         # OpenCode Zen с бесплатными моделями вместо Go).
@@ -822,6 +868,14 @@ async def create_response(request: Request):
         if body.get("stream"):
             return await _handle_stream(chat, upstream, key)
         return await _handle_non_stream(chat, upstream, key)
+
+    # Неизвестный kind — ошибка конфигурации; молча считать его passthrough
+    # нельзя: запрос ушёл бы не в тот формат и не на тот адрес.
+    if kind != "passthrough":
+        return JSONResponse(
+            _error_body(400, f"Provider '{provider.get('id', '?')}' has unknown kind: {kind!r} (expected 'passthrough' or 'opencode-chat')"),
+            status_code=400,
+        )
 
     # passthrough: forward to provider's base_url/responses as-is
     key = get_setting(provider.get("env_key", ""))

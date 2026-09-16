@@ -12,14 +12,18 @@
 proxy/app.py
 proxy/run_proxy.py
 models_data.py
-providers.json
+providers.example.json   # шаблон; или ваш готовый providers.json
 generator.py
 ```
 
 Скопируйте их в папку, например `/opt/changemodel/`:
 ```bash
-scp proxy/app.py proxy/run_proxy.py models_data.py providers.json generator.py user@server:/opt/changemodel/
+scp proxy/app.py proxy/run_proxy.py models_data.py providers.example.json generator.py user@server:/opt/changemodel/
+ssh user@server 'cp /opt/changemodel/providers.example.json /opt/changemodel/providers.json'
 ```
+
+(Если список моделей уже настроен локально в окне Vibix ChangeModel — копируйте
+вместо шаблона свой `providers.json`.)
 
 ## Шаг 2. Установить зависимости
 

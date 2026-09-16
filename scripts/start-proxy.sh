@@ -12,17 +12,20 @@ if [ ! -f proxy/run_proxy.py ]; then
   exit 1
 fi
 
+# PROXY_PORT: опционально, порт прокси (по умолчанию 4096).
+PORT="${PROXY_PORT:-4096}"
+
 # If proxy already running, do nothing.
-if curl -sf --max-time 2 http://127.0.0.1:4096/healthz >/dev/null 2>&1; then
+if curl -sf --max-time 2 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
   echo "[ChangeModel] Proxy already running."
   exit 0
 fi
 
 nohup python3 proxy/run_proxy.py >/tmp/change-model-proxy.log 2>&1 &
-echo "[ChangeModel] Starting proxy on http://127.0.0.1:4096 ..."
+echo "[ChangeModel] Starting proxy on http://127.0.0.1:${PORT} ..."
 
 for _ in $(seq 1 15); do
-  if curl -sf --max-time 1 http://127.0.0.1:4096/healthz >/dev/null 2>&1; then
+  if curl -sf --max-time 1 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
     echo "[ChangeModel] Proxy is up."
     exit 0
   fi

@@ -1,12 +1,8 @@
 """Shared model metadata for the ChangeModel proxy and generator.
 
-OpenCode Go wire formats:
-- responses        -> grok-4.5, gpt-5.6-luna (direct, no proxy needed)
-- chat/completions -> everything else the proxy serves: glm-*, deepseek-v4-*,
-  kimi-*, mimo-*, qwen3.8-*, minimax-*, hy3 (minimax-* и qwen*-max/plus раньше
-  говорили на Anthropic messages — сейчас отвечают по chat/completions).
-
-This module lists the chat-completions models the proxy handles.
+Реальные лимиты контекста и входные модальности моделей берутся из models.dev
+(источник данных самого opencode) с кэшем на 6 часов; каталог Codex-совместимых
+записей собирает proxy/app.py из providers.json с помощью _catalog_entry.
 """
 from __future__ import annotations
 
@@ -148,26 +144,6 @@ def vision_mark(model_id: str, provider: str | None = None, mark: str = " [img]"
     """Метка для отображения у моделей, принимающих картинки."""
     return mark if "image" in model_input_modalities(model_id, provider) else ""
 
-# (id, display name, one-line description)
-OPENCODE_CHAT_MODELS = [
-    ("glm-5.3", "GLM-5.3", "Zhipu GLM coding model"),
-    ("glm-5.2", "GLM-5.2", "Zhipu GLM coding model"),
-    ("glm-5.1", "GLM-5.1", "Zhipu GLM coding model"),
-    ("kimi-k3", "Kimi K3", "Moonshot Kimi coding model"),
-    ("kimi-k2.7-code", "Kimi K2.7 Code", "Moonshot Kimi coding model"),
-    ("kimi-k2.6", "Kimi K2.6", "Moonshot Kimi coding model"),
-    ("deepseek-v4-pro", "DeepSeek V4 Pro", "DeepSeek coding model"),
-    ("deepseek-v4-flash", "DeepSeek V4 Flash", "DeepSeek coding model"),
-    ("mimo-v2.5", "MiMo-V2.5", "Xiaomi MiMo coding model"),
-    ("mimo-v2.5-pro", "MiMo-V2.5-Pro", "Xiaomi MiMo coding model"),
-    ("hy3", "Hy3", "OpenCode tested coding model"),
-]
-
-OPENCODE_RESPONSES_MODELS = [
-    ("grok-4.5", "Grok 4.5", "xAI Grok via OpenCode Go (Responses wire)"),
-    ("gpt-5.6-luna", "GPT 5.6 Luna", "OpenAI GPT via OpenCode Go (Responses wire)"),
-]
-
 
 def _catalog_entry(
     slug: str,
@@ -227,11 +203,3 @@ def _catalog_entry(
         "multi_agent_version": "v2",
         "upgrade": None,
     }
-
-
-def chat_catalog() -> list[dict]:
-    return [_catalog_entry(*m) for m in OPENCODE_CHAT_MODELS]
-
-
-def responses_catalog() -> list[dict]:
-    return [_catalog_entry(*m) for m in OPENCODE_RESPONSES_MODELS]

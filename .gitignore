@@ -4,6 +4,10 @@ proxy/.env
 proxy/proxy.pid
 *.log
 
+# личный конфиг пользователя — в репозитории только шаблон providers.example.json;
+# providers.json создаётся из шаблона при первом запуске
+providers.json
+
 # python
 __pycache__/
 *.py[cod]
