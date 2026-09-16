@@ -450,6 +450,88 @@ def test_parse_atom_latest() -> None:
     assert gui._parse_atom_latest("<feed xmlns='http://www.w3.org/2005/Atom'></feed>") == (None, None)
 
 
+def test_robust_junk_input() -> None:
+    """Мусор в input (null, числа) пропускается, а не роняет прокси с 500."""
+    from proxy.app import _input_to_messages
+
+    msgs = _input_to_messages(
+        [None, 42, {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
+    )
+    assert len(msgs) == 1 and msgs[0]["content"] == "hi"
+
+
+def test_robust_junk_tools() -> None:
+    from proxy.app import _tool_choice_to_chat, _tools_to_chat
+
+    tools = _tools_to_chat(["x", None, {"type": "function", "name": "f"}])
+    assert len(tools) == 1 and tools[0]["function"]["name"] == "f"
+    assert _tool_choice_to_chat({"function": "name-as-string"}) == "auto"
+
+
+def test_robust_junk_upstream_message() -> None:
+    from proxy.app import _chat_message_to_items
+
+    items, _text = _chat_message_to_items(
+        {"content": None, "tool_calls": [None, "x", {"id": "c1", "function": {"name": "f", "arguments": "{}"}}]}
+    )
+    assert len(items) == 1 and items[0]["type"] == "function_call"
+
+
+def test_find_model_skips_broken_entries() -> None:
+    import proxy.app as app
+
+    orig = app.load_providers
+    app.load_providers = lambda: [{"id": "p", "models": [{"name": "NoId"}, "junk", {"id": "m1", "name": "M1"}]}]
+    try:
+        prov, model = app.find_model("m1")
+        assert prov is not None and model["id"] == "m1"
+        assert app.find_model("нет-такой") == (None, None)
+    finally:
+        app.load_providers = orig
+
+
+def test_stream_skips_malformed_chunks() -> None:
+    """Битые чанки апстрима (choices [null], tool_calls с мусором) не рвут стрим."""
+    lines = [
+        "data: " + json.dumps({"choices": [{"delta": {"content": "hi"}}]}),
+        "data: " + json.dumps({"choices": [None]}),
+        "data: " + json.dumps({"choices": [{"delta": {"tool_calls": [None, "x"]}}]}),
+        "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        "data: [DONE]",
+    ]
+    client = _FakeHttpClient(_FakeStreamUpstream(lines))
+    with _Patch(
+        load_providers=lambda: [ZEN_PROVIDER],
+        get_setting=lambda name: "",
+        http_client=lambda: client,
+    ):
+        resp = asyncio.run(app_module.create_response(_make_request({"model": "zen-model", "stream": True})))
+        body = _collect_stream(resp)
+
+    completed = next(e for e in _sse_events(body) if e["type"] == "response.completed")["response"]
+    assert completed["output_text"] == "hi"
+
+
+def test_catalog_skips_broken_entries() -> None:
+    import models_data as md
+    import proxy.app as app
+
+    orig_fetch = md._fetch_models_dev
+    orig_providers = app.load_providers
+    md._fetch_models_dev = lambda: None
+    md._limits_cache["at"] = -1e18
+    app.load_providers = lambda: [{"id": "p", "name": "P", "models": [{"name": "NoId"}, "junk", {"id": "m1", "name": "M1"}]}]
+    try:
+        entries = app.catalog_entries()
+        assert [e["slug"] for e in entries] == ["m1"]
+    finally:
+        md._fetch_models_dev = orig_fetch
+        md._limits_cache["at"] = -1e18
+        md._limits_cache["nested"] = None
+        md._limits_cache["flat"] = None
+        app.load_providers = orig_providers
+
+
 def test_passthrough_without_base_url_returns_400() -> None:
     provider = {
         "id": "no-base",

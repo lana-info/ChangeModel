@@ -79,6 +79,28 @@ python generator.py --profile changemodel   # переключить Codex на 
 (`https://agentrouter.org/v1`). Для новых достаточно Base URL и ключа —
 модели подберёт кнопка **«Подобрать»**.
 
+### Где взять API-ключи
+
+Ключ вставляется в окне ChangeModel: выберите провайдера → «Редактировать» →
+поле «API-ключ» → Сохранить (или задайте переменную окружения с тем же именем).
+Где получить сами ключи:
+
+- **OpenRouter** — регистрация на openrouter.ai → раздел Keys
+  (`openrouter.ai/settings/keys`) → «Create Key». Модели с суффиксом `:free`
+  бесплатны; для платных нужно пополнить баланс (Credits).
+- **OpenCode Go / Zen** — ключи выдаются в личном кабинете OpenCode
+  (opencode.ai): отдельный ключ для Go (`OPENCODE_GO_API_KEY`) и для Zen
+  (`OPENCODE_ZEN_API_KEY`). Модели Zen с суффиксом `-free` доступны сразу;
+  платные требуют баланса. Модели семейства Muse Spark дополнительно требуют
+  согласия на использование данных — оно оформляется в настройках вашего
+  workspace OpenCode, без него сервис отвечает ошибкой.
+- **GMI Cloud** — регистрация в консоли console.gmicloud.ai → Settings →
+  API Keys (подробности: docs.gmicloud.ai, раздел Quickstart).
+- **Agent Router** — ключ выдаётся на сайте сервиса (agentrouter.org).
+
+Если ключ неверный или пустой, модели провайдера вернут ошибку авторизации —
+проверьте ключ и попробуйте ещё раз.
+
 ## Запуск на сервере (VDS)
 
 Прокси работает как systemd-сервис, Codex CLI на том же сервере смотрит на
@@ -144,3 +166,25 @@ Releases (`v*`, Windows exe + macOS DMG) are built automatically by the
   source (`python3 gui.py`) also works with a tkinter-enabled Python.
 - Everywhere you additionally need: a separately installed **Codex CLI**,
   internet access, and your own provider API keys (stored locally only).
+
+### Where to get API keys
+
+Paste a key in the ChangeModel window: select a provider → Edit → the
+“API key” field → Save (or set an environment variable with the same name).
+Where the keys come from:
+
+- **OpenRouter** — sign up at openrouter.ai → the Keys section
+  (`openrouter.ai/settings/keys`) → “Create Key”. Models with the `:free`
+  suffix are free; paid ones need Credits balance.
+- **OpenCode Go / Zen** — keys are issued in your OpenCode account
+  (opencode.ai): a separate key for Go (`OPENCODE_GO_API_KEY`) and for Zen
+  (`OPENCODE_ZEN_API_KEY`). Zen models with the `-free` suffix work right
+  away; paid ones need balance. Muse Spark models additionally require
+  data-usage consent in your OpenCode workspace settings, otherwise the
+  service returns an error.
+- **GMI Cloud** — sign up in the console at console.gmicloud.ai → Settings →
+  API Keys (see docs.gmicloud.ai, Quickstart).
+- **Agent Router** — the key is issued on the service website (agentrouter.org).
+
+If a key is wrong or empty, that provider's models return an authorization
+error — double-check the key and retry.

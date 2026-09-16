@@ -144,7 +144,7 @@ def load_data() -> dict:
     try:
         mtime = os.path.getmtime(PROVIDERS_FILE)
     except OSError:
-        return {}
+        return _data_cache[1]  # файл недоступен — отдаём последний хороший конфиг
     if _data_cache[0] == mtime and _data_cache[1]:
         return _data_cache[1]
     try:
@@ -165,7 +165,7 @@ def find_model(model_id: str) -> tuple[dict | None, dict | None]:
     """Возвращает (провайдер, модель) по id модели или (None, None)."""
     for p in load_providers():
         for m in p.get("models", []):
-            if m["id"] == model_id:
+            if isinstance(m, dict) and m.get("id") == model_id:
                 return p, m
     return None, None
 
@@ -198,11 +198,16 @@ def catalog_entries() -> list[dict]:
     out = []
     inst = base_instructions()
     for p in load_providers():
+        if not isinstance(p, dict):
+            continue
         p_id = p.get("id", "")
         provider_hint = models_data.PROVIDER_MAP.get(p_id, p_id)
         for m in p.get("models", []):
-            name = f"{p.get('name', '?')} — {m['name']}" + models_data.vision_mark(m["id"], provider_hint)
-            out.append(_catalog_entry(m["id"], name, f"{p.get('name', '?')} model", inst, provider_hint))
+            if not isinstance(m, dict) or not m.get("id"):
+                continue  # битая запись в providers.json — пропускаем, а не роняем весь каталог
+            mid = m["id"]
+            name = f"{p.get('name', '?')} — {m.get('name', mid)}" + models_data.vision_mark(mid, provider_hint)
+            out.append(_catalog_entry(mid, name, f"{p.get('name', '?')} model", inst, provider_hint))
     return out
 
 
@@ -371,6 +376,8 @@ def _input_to_messages(input_items) -> list[dict]:
         if isinstance(item, str):
             messages.append({"role": "user", "content": item})
             continue
+        if not isinstance(item, dict):
+            continue  # мусор в input — пропускаем, а не падаем с 500
         itype = item.get("type", "message")
         if itype == "message":
             role = item.get("role", "user")
@@ -408,7 +415,7 @@ def _input_to_messages(input_items) -> list[dict]:
 def _tools_to_chat(tools: list) -> list[dict]:
     out = []
     for t in tools or []:
-        if t.get("type") != "function":
+        if not isinstance(t, dict) or t.get("type") != "function":
             continue
         fn = {"name": t.get("name", ""), "description": t.get("description", ""), "parameters": t.get("parameters", {"type": "object"})}
         out.append({"type": "function", "function": fn})
@@ -421,7 +428,8 @@ def _tool_choice_to_chat(tool_choice) -> dict | str | None:
     if isinstance(tool_choice, str):
         return tool_choice
     if isinstance(tool_choice, dict):
-        name = tool_choice.get("name") or (tool_choice.get("function") or {}).get("name")
+        fn = tool_choice.get("function")
+        name = tool_choice.get("name") or (fn.get("name") if isinstance(fn, dict) else None)
         if name:
             return {"type": "function", "function": {"name": name}}
     return "auto"
@@ -471,7 +479,11 @@ def _chat_message_to_items(msg: dict) -> tuple[list[dict], str]:
             }
         )
     for tc in msg.get("tool_calls") or []:
-        fn = tc.get("function", {})
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") or {}
+        if not isinstance(fn, dict):
+            fn = {}
         call_id = tc.get("id") or "call_" + uuid.uuid4().hex[:16]
         items.append(
             {
@@ -623,14 +635,20 @@ async def _handle_stream(chat: dict, upstream: str, key: str) -> StreamingRespon
                     # после finish интересен только кадр с usage (он идёт
                     # отдельным чанком с пустым choices и ловится выше)
                     continue
-                delta = choices[0].get("delta") or {}
+                first = choices[0] if isinstance(choices[0], dict) else {}
+                delta = first.get("delta") or {}
 
                 for tc in delta.get("tool_calls") or []:
+                    if not isinstance(tc, dict):
+                        continue  # битый чанк апстрима — пропускаем, стрим не рвём
+                    tfn = tc.get("function")
+                    if not isinstance(tfn, dict):
+                        tfn = {}
                     idx = tc.get("index", 0)
                     st = tool_state.get(idx)
                     if st is None:
                         call_id = tc.get("id") or f"call_{uuid.uuid4().hex[:16]}"
-                        name = (tc.get("function") or {}).get("name", "")
+                        name = tfn.get("name", "")
                         st = {"call_id": call_id, "name": name, "args": ""}
                         tool_state[idx] = st
                         item = {
@@ -655,7 +673,7 @@ async def _handle_stream(chat: dict, upstream: str, key: str) -> StreamingRespon
                         output_index += 1
                     else:
                         call_id = st["call_id"]
-                    arg_delta = (tc.get("function") or {}).get("arguments") or ""
+                    arg_delta = tfn.get("arguments") or ""
                     if arg_delta:
                         st["args"] += arg_delta
                         yield _event(
@@ -704,7 +722,7 @@ async def _handle_stream(chat: dict, upstream: str, key: str) -> StreamingRespon
                         }
                     )
 
-                finish = choices[0].get("finish_reason")
+                finish = first.get("finish_reason")
                 if finish:
                     finished = True
                     # message-item берём из output_items по его индексу:

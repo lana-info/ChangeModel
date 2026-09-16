@@ -29,6 +29,10 @@
         {
           "id": "google/gemma-4-31b-it:free",
           "name": "Gemma 4 31B (free)"
+        },
+        {
+          "id": "z-ai/glm-5.2:free",
+          "name": "Z.ai: GLM 5.2 (free)"
         }
       ]
     },
@@ -90,6 +94,22 @@
         {
           "id": "mimo-v2.5-free",
           "name": "MiMo V2.5 (free)"
+        },
+        {
+          "id": "deepseek-v4-flash-free",
+          "name": "deepseek-v4-flash-free"
+        },
+        {
+          "id": "muse-spark-1.3-contributor-free",
+          "name": "muse-spark-1.3-contributor-free"
+        },
+        {
+          "id": "nemotron-3-ultra-free",
+          "name": "nemotron-3-ultra-free"
+        },
+        {
+          "id": "nemotron-3.5-lightning-free",
+          "name": "nemotron-3.5-lightning-free"
         }
       ]
     },
