@@ -600,8 +600,8 @@ def test_free_line_marks_provider_and_new() -> None:
 
     new_zen = {"id": "mimo-v2.5-free", "name": "MiMo", "added": False, "provider_id": "opencode-zen", "source": "OpenCode Zen"}
     old_or = {"id": "x/x:free", "name": "X", "added": True, "provider_id": "openrouter", "source": "OpenRouter"}
-    assert gui.FreeModelsDialog._line(new_zen) == "[новая] [Zen] MiMo — mimo-v2.5-free"
-    assert gui.FreeModelsDialog._line(old_or) == "[OpenRouter] X — x/x:free"
+    assert gui._free_line(new_zen) == "[новая] [Zen] MiMo — mimo-v2.5-free"
+    assert gui._free_line(old_or) == "[OpenRouter] X — x/x:free"
 
 
 def test_add_free_items() -> None:

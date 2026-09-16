@@ -40,7 +40,7 @@ PROVIDERS_FILE = BASE_DIR / "providers.json"
 
 BASE_MODEL = "gpt-5.6-luna"
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 GITHUB_REPO = "lana-info/ChangeModel"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases"
@@ -321,12 +321,12 @@ class ChangeModelApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         root.title(f"Vibix ChangeModel {APP_VERSION} — модели для Codex")
-        root.geometry("1120x560")
-        root.minsize(1040, 480)
+        root.geometry("1160x580")
 
         self.providers: list[dict] = []
         self._default_model = ""
         self.free_items: list[dict] = []
+        self.free_shown: list[dict] = []
         self._status_thread: threading.Thread | None = None
         ensure_data_file()
         self.load_providers()
@@ -543,18 +543,23 @@ class ChangeModelApp:
 
         row2 = ttk.Frame(toolbar)
         row2.pack(fill=tk.X, pady=(4, 0))
-        ttk.Button(row2, text="Бесплатные сегодня", command=self.show_free_models).pack(side=tk.LEFT)
         ttk.Button(row2, text="О программе", command=self.show_about).pack(side=tk.RIGHT)
         self.autostart_var = tk.BooleanVar(value=self.is_autostart_enabled() if sys.platform.startswith("win") else False)
         if sys.platform.startswith("win"):
             ttk.Checkbutton(row2, text="Автозапуск прокси при включении Windows", variable=self.autostart_var, command=self.toggle_autostart).pack(side=tk.LEFT, padx=(12, 0))
 
-        paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        # Три колонки с зафиксированной шириной (без ползунка): провайдеры
+        # и бесплатные — равные, модели — вдвое шире. Кнопки всегда видны.
+        cols = ttk.Frame(self.root)
+        cols.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        cols.grid_columnconfigure(0, weight=1)
+        cols.grid_columnconfigure(1, weight=2)
+        cols.grid_columnconfigure(2, weight=1)
+        cols.grid_rowconfigure(0, weight=1)
 
         # left: providers list
-        left = ttk.Frame(paned, padding=(0, 0, 6, 0))
-        paned.add(left, weight=3)
+        left = ttk.Frame(cols, padding=(0, 0, 6, 0))
+        left.grid(row=0, column=0, sticky="nsew")
         ttk.Label(left, text="Провайдеры", style="Title.TLabel").pack(anchor=tk.W, pady=(0, 2))
         self.providers_list = tk.Listbox(left, exportselection=False, font=_FONT_BASE, activestyle="none", selectbackground=_ACCENT_BG, selectforeground=_ACCENT_FG, highlightthickness=1, highlightbackground="#d1d5db", relief="solid", borderwidth=1)
         self.providers_list.pack(fill=tk.BOTH, expand=True)
@@ -566,8 +571,8 @@ class ChangeModelApp:
         ttk.Button(btns_l, text="Удалить", command=self.remove_provider).pack(side=tk.LEFT, padx=(6, 0))
 
         # right: models of selected provider
-        right = ttk.Frame(paned, padding=(6, 0, 0, 0))
-        paned.add(right, weight=5)
+        right = ttk.Frame(cols, padding=(6, 0, 0, 0))
+        right.grid(row=0, column=1, sticky="nsew")
         ttk.Label(right, text="Модели", style="Title.TLabel").pack(anchor=tk.W, pady=(0, 2))
         self.models_list = tk.Listbox(right, exportselection=False, font=_FONT_BASE, activestyle="none", selectbackground=_ACCENT_BG, selectforeground=_ACCENT_FG, highlightthickness=1, highlightbackground="#d1d5db", relief="solid", borderwidth=1)
         self.models_list.pack(fill=tk.BOTH, expand=True)
@@ -580,9 +585,13 @@ class ChangeModelApp:
         ttk.Button(btns_r, text="Модель по умолчанию", command=self.set_default_model).pack(side=tk.RIGHT)
 
         # right-most: бесплатные модели видны сразу, без кнопки
-        free = ttk.Frame(paned, padding=(6, 0, 0, 0))
-        paned.add(free, weight=2)
+        free = ttk.Frame(cols, padding=(6, 0, 0, 0))
+        free.grid(row=0, column=2, sticky="nsew")
         ttk.Label(free, text="Бесплатно сегодня", style="Title.TLabel").pack(anchor=tk.W, pady=(0, 2))
+        ttk.Label(free, text="Поиск:").pack(anchor=tk.W)
+        self.free_search = ttk.Entry(free)
+        self.free_search.pack(fill=tk.X, pady=(2, 4))
+        self.free_search.bind("<KeyRelease>", lambda _e: self._refresh_free_panel())
         self.free_list = tk.Listbox(free, selectmode=tk.EXTENDED, exportselection=False, font=_FONT_BASE, activestyle="none", selectbackground=_ACCENT_BG, selectforeground=_ACCENT_FG, highlightthickness=1, highlightbackground="#d1d5db", relief="solid", borderwidth=1)
         self.free_list.pack(fill=tk.BOTH, expand=True)
         btns_f = ttk.Frame(free)
@@ -602,6 +611,9 @@ class ChangeModelApp:
         self.news_var = tk.StringVar()
         self.news = ttk.Label(self.root, textvariable=self.news_var, padding=(8, 3), style="News.TLabel")
         self.news.pack(fill=tk.X, side=tk.BOTTOM)
+        # Минимальный размер окна — по содержимому (кнопки всегда видны целиком).
+        self.root.update_idletasks()
+        self.root.minsize(self.root.winfo_reqwidth(), 500)
         self.update_status()
 
     # ---------- helpers ----------
@@ -903,7 +915,7 @@ class ChangeModelApp:
                     text = f"Бесплатно сегодня: Zen — {zen}, OpenRouter — {orouter}"
                     if fresh:
                         text += f" · новых для вас: {fresh}"
-                    text += "  (кнопка «Бесплатные сегодня»)"
+                    text += "  (список справа)"
                     self.news_var.set(text)
                 else:
                     self.news_var.set("")
@@ -912,42 +924,18 @@ class ChangeModelApp:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def show_free_models(self) -> None:
-        """Список бесплатных моделей Zen и OpenRouter, добавление выбранных."""
-        self.status_var.set("Загружаю бесплатные модели...")
-
-        def work() -> None:
-            items, errors = collect_free_items(self.providers)
-
-            def show() -> None:
-                self.status_var.set("")
-                if not items:
-                    if errors:
-                        messagebox.showinfo("Vibix ChangeModel", "Не удалось загрузить каталоги:\n" + "\n".join(errors))
-                    else:
-                        messagebox.showinfo("Vibix ChangeModel", "Бесплатных моделей не нашлось.")
-                    return
-                dlg = FreeModelsDialog(self.root, title="Бесплатные модели сегодня", items=items, errors=errors)
-                if not dlg.result:
-                    return
-                added = self._add_free_items(dlg.result)
-                if added:
-                    self.save_providers()
-                    self.refresh_models()
-                    self.status_var.set(f"Добавлено моделей: {added}")
-                    self.refresh_free_news()
-
-            self._ui_call(show)
-
-        threading.Thread(target=work, daemon=True).start()
-
     def _refresh_free_panel(self) -> None:
         """Перерисовывает правую панель бесплатных моделей. Только отображение."""
         try:
+            q = self.free_search.get().strip().lower()
+            self.free_shown = [
+                it for it in self.free_items
+                if not q or q in it["id"].lower() or q in str(it.get("name", "")).lower()
+            ]
             self.free_list.delete(0, tk.END)
-            for it in self.free_items:
-                self.free_list.insert(tk.END, FreeModelsDialog._line(it))
-            _paint_free_rows(self.free_list, self.free_items)
+            for it in self.free_shown:
+                self.free_list.insert(tk.END, _free_line(it))
+            _paint_free_rows(self.free_list, self.free_shown)
         except Exception:
             pass
 
@@ -971,7 +959,7 @@ class ChangeModelApp:
         if not sel:
             messagebox.showinfo("Vibix ChangeModel", "Отметьте модели в списке «Бесплатно сегодня».")
             return
-        chosen = [self.free_items[i] for i in sel if i < len(self.free_items)]
+        chosen = [self.free_shown[i] for i in sel if i < len(self.free_shown)]
         if not chosen:
             return
         added = self._add_free_items(chosen)
@@ -1262,6 +1250,13 @@ class CatalogPickerDialog:
         self.top.destroy()
 
 
+def _free_line(it: dict) -> str:
+    """Строка бесплатной модели: пометка [новая] и короткий тег провайдера."""
+    prefix = "[новая] " if not it["added"] else ""
+    tag = _PROVIDER_SHORT.get(it.get("provider_id", ""), it.get("source", ""))
+    return f"{prefix}[{tag}] {it['name']} — {it['id']}"
+
+
 def _paint_free_rows(lst: tk.Listbox, items: list[dict]) -> None:
     """Подсветка строк бесплатных моделей: фон по провайдеру
     (Zen — голубой, OpenRouter — зелёный). Новые помечены текстом [новая]."""
@@ -1273,96 +1268,6 @@ def _paint_free_rows(lst: tk.Listbox, items: list[dict]) -> None:
             lst.itemconfig(i, background=tint)
         except Exception:
             pass
-
-
-class FreeModelsDialog:
-    """Модальное окно «Бесплатные модели сегодня» (OpenCode Zen + OpenRouter).
-
-    Новые модели (которых ещё нет в списке пользователя) идут первыми
-    и помечаются словом «новая». Zen-модели добавляются к провайдеру
-    OpenCode Zen, OpenRouter-модели — к провайдеру OpenRouter."""
-
-    def __init__(self, parent: tk.Tk, title: str, items: list[dict], errors: list[str] | None = None) -> None:
-        self.result: list[dict] | None = None
-        self.items = sorted(items, key=lambda i: (i["added"], i["source"], (i["name"] or "").lower()))
-        self.filtered: list[dict] = list(self.items)
-
-        self.top = tk.Toplevel(parent)
-        self.top.title(title)
-        self.top.grab_set()
-        self.top.transient(parent)
-
-        body = ttk.Frame(self.top, padding=16)
-        body.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(body, text="Поиск:").pack(anchor=tk.W)
-        self.ent_search = ttk.Entry(body)
-        self.ent_search.pack(fill=tk.X, pady=(2, 6))
-        self.ent_search.bind("<KeyRelease>", lambda _e: self._apply_filter())
-
-        self.list = tk.Listbox(body, selectmode=tk.EXTENDED, exportselection=False, height=20, font=_FONT_BASE, activestyle="none", selectbackground=_ACCENT_BG, selectforeground=_ACCENT_FG, highlightthickness=1, highlightbackground="#d1d5db", relief="solid", borderwidth=1)
-        self.list.pack(fill=tk.BOTH, expand=True)
-        self.count_var = tk.StringVar()
-        ttk.Label(body, textvariable=self.count_var).pack(anchor=tk.W, pady=(4, 0))
-        ttk.Label(
-            body,
-            text="«новая» — модели, которых ещё нет в вашем списке. "
-                 "Модели OpenRouter добавляются к провайдеру OpenRouter, "
-                 "модели Zen — к OpenCode Zen.",
-            foreground="#666",
-            wraplength=560,
-            justify=tk.LEFT,
-        ).pack(anchor=tk.W, pady=(2, 0))
-        if errors:
-            ttk.Label(
-                body,
-                text="Не загрузились: " + "; ".join(errors),
-                foreground="#a00",
-                wraplength=560,
-                justify=tk.LEFT,
-            ).pack(anchor=tk.W, pady=(2, 0))
-
-        btns = ttk.Frame(self.top, padding=16)
-        btns.pack(fill=tk.X)
-        ttk.Button(btns, text="Добавить выбранные", command=self.on_add, style="Accent.TButton").pack(side=tk.RIGHT)
-        ttk.Button(btns, text="Отмена", command=self.top.destroy).pack(side=tk.RIGHT, padx=(0, 6))
-
-        self._apply_filter()
-        self.top.update_idletasks()
-        w = max(680, self.top.winfo_reqwidth() + 40)
-        h = min(640, self.top.winfo_reqheight() + 20)
-        x = parent.winfo_rootx() + 60
-        y = parent.winfo_rooty() + 40
-        self.top.geometry(f"{w}x{h}+{x}+{y}")
-        self.ent_search.focus_set()
-        # Ждём закрытия диалога, иначе результат не будет прочитан.
-        parent.wait_window(self.top)
-
-    @staticmethod
-    def _line(it: dict) -> str:
-        prefix = "[новая] " if not it["added"] else ""
-        tag = _PROVIDER_SHORT.get(it.get("provider_id", ""), it.get("source", ""))
-        return f"{prefix}[{tag}] {it['name']} — {it['id']}"
-
-    def _apply_filter(self) -> None:
-        q = self.ent_search.get().strip().lower()
-        self.filtered = [
-            it for it in self.items
-            if not q or q in it["id"].lower() or q in (it["name"] or "").lower()
-        ]
-        self.list.delete(0, tk.END)
-        for it in self.filtered:
-            self.list.insert(tk.END, self._line(it))
-        _paint_free_rows(self.list, self.filtered)
-        fresh = sum(1 for it in self.filtered if not it["added"])
-        self.count_var.set(f"Моделей: {len(self.filtered)} из {len(self.items)} · новых: {fresh}")
-
-    def on_add(self) -> None:
-        sel = self.list.curselection()
-        if not sel:
-            messagebox.showinfo("Vibix ChangeModel", "Отметьте модели в списке.", parent=self.top)
-            return
-        self.result = [self.filtered[i] for i in sel]
-        self.top.destroy()
 
 
 def _parse_version(text: str) -> tuple[int, ...]:
