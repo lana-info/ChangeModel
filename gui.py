@@ -88,6 +88,71 @@ def _apply_visual_theme(root: tk.Tk) -> None:
         pass
 
 
+# ---------- вставка в поля ввода ----------
+# Две проблемы: 1) в Tkinter нет меню по правой кнопке — добавляем своё
+# (Вырезать/Копировать/Вставить/Выделить всё) для всех полей ввода;
+# 2) при русской раскладке Ctrl+C/V/X не работают (Tk ищет латинские
+# keysym'ы, а клавиши дают Cyrillic_*), поэтому добавляем русские сочетания
+# в виртуальные события <<Copy>>/<<Paste>>/<<Cut>> и Ctrl+Ф для выделения.
+_ENTRY_RU_KEYS = {
+    "<<Copy>>": ("<Control-Cyrillic_es>", "<Control-Cyrillic_ES>"),
+    "<<Paste>>": ("<Control-Cyrillic_em>", "<Control-Cyrillic_EM>"),
+    "<<Cut>>": ("<Control-Cyrillic_che>", "<Control-Cyrillic_CHE>"),
+}
+
+
+def _entry_context_menu(entry: tk.Widget) -> tk.Menu:
+    """Меню по правой кнопке для поля ввода."""
+    menu = tk.Menu(entry, tearoff=0)
+    menu.add_command(label="Вырезать", command=lambda: entry.event_generate("<<Cut>>"))
+    menu.add_command(label="Копировать", command=lambda: entry.event_generate("<<Copy>>"))
+    menu.add_command(label="Вставить", command=lambda: entry.event_generate("<<Paste>>"))
+    menu.add_separator()
+    menu.add_command(
+        label="Выделить всё",
+        command=lambda: (entry.focus_set(), entry.select_range(0, tk.END)),
+    )
+    return menu
+
+
+def _show_entry_menu(event) -> str:
+    """Показ меню по правой кнопке. Только удобство, логика не меняется."""
+    widget = event.widget
+    try:
+        widget.focus_set()
+    except Exception:
+        pass
+    try:
+        _entry_context_menu(widget).tk_popup(event.x_root, event.y_root)
+    except Exception:
+        pass
+    return "break"
+
+
+def _fix_entry_keys(root: tk.Tk) -> None:
+    """Чинит вставку в поля ввода (меню + русские Ctrl-сочетания). Безопасно."""
+    try:
+        for virtual, sequences in _ENTRY_RU_KEYS.items():
+            for seq in sequences:
+                root.event_add(virtual, seq)
+        root.bind_class("TEntry", "<Button-3>", _show_entry_menu)
+        if sys.platform == "darwin":
+            # на macOS правая кнопка — это Button-2
+            root.bind_class("TEntry", "<Button-2>", _show_entry_menu)
+
+        def _select_all(event) -> str:
+            try:
+                event.widget.select_range(0, tk.END)
+            except Exception:
+                pass
+            return "break"
+
+        root.bind_class("TEntry", "<Control-Cyrillic_ef>", _select_all)
+        root.bind_class("TEntry", "<Control-Cyrillic_EF>", _select_all)
+    except Exception:
+        pass
+
+
 def ensure_data_file() -> None:
     """При сборке в exe: если рядом с exe нет providers.json, копируем встроенный."""
     if getattr(sys, "frozen", False) and not PROVIDERS_FILE.exists():
@@ -332,6 +397,7 @@ class ChangeModelApp:
         self.load_providers()
 
         _apply_visual_theme(root)
+        _fix_entry_keys(root)
         self._build_layout()
         self.refresh_providers()
         self.update_status()
@@ -1041,7 +1107,7 @@ class ProviderDialog:
 
         for label, key, show in [
             ("Переменная API-ключа (шаблон; обычно оставляйте как есть)", "env_key", ""),
-            ("API-ключ — вставьте свой ключ (сохранится в proxy/.env)", "api_key", "•"),
+            ("API-ключ — вставьте ключ (Ctrl+V или правая кнопка → «Вставить»; сохранится в proxy/.env)", "api_key", "•"),
         ]:
             ttk.Label(body, text=label).pack(anchor=tk.W, pady=(4, 0))
             ent = ttk.Entry(body, width=52, show=show)

@@ -710,6 +710,15 @@ def test_add_free_items() -> None:
     assert [m["id"] for m in providers[1]["models"]] == ["c"]
 
 
+def test_entry_ru_keys_defined() -> None:
+    """Русские Ctrl-сочетания зарегистрированы для вставки (без Tk — только данные)."""
+    import gui
+
+    assert any("Cyrillic_em" in s for s in gui._ENTRY_RU_KEYS["<<Paste>>"])
+    assert any("Cyrillic_es" in s for s in gui._ENTRY_RU_KEYS["<<Copy>>"])
+    assert any("Cyrillic_che" in s for s in gui._ENTRY_RU_KEYS["<<Cut>>"])
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
