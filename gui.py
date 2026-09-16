@@ -64,9 +64,9 @@ def _apply_visual_theme(root: tk.Tk) -> None:
     try:
         style = ttk.Style(root)
         available = set(style.theme_names())
-        if sys.platform.startswith("win") and "vista" in available:
-            style.theme_use("vista")
-        elif "clam" in available:
+        # Только clam: тема vista игнорирует свой background у кнопок,
+        # из-за чего белый текст становился нечитаемым на светлой кнопке.
+        if "clam" in available:
             style.theme_use("clam")
         style.configure("TButton", padding=(10, 5), font=_FONT_BASE)
         style.configure("TLabel", font=_FONT_BASE)
