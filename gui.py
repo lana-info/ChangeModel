@@ -43,7 +43,7 @@ PROVIDERS_FILE = BASE_DIR / "providers.json"
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "4096"))
 PROXY_HTTP = f"http://127.0.0.1:{PROXY_PORT}"
 
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 GITHUB_REPO = "lana-info/ChangeModel"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases"
@@ -437,7 +437,7 @@ class ChangeModelApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         root.title(f"Vibix ChangeModel {APP_VERSION} — модели для Codex")
-        root.geometry("1160x580")
+        root.geometry("1260x580")
 
         self.providers: list[dict] = []
         self._default_model = ""
@@ -689,13 +689,14 @@ class ChangeModelApp:
         if sys.platform.startswith("win"):
             ttk.Checkbutton(row2, text="Автозапуск прокси при включении Windows", variable=self.autostart_var, command=self.toggle_autostart).pack(side=tk.LEFT, padx=(12, 0))
 
-        # Три колонки с зафиксированной шириной (без ползунка): провайдеры
-        # и бесплатные — равные, модели — вдвое шире. Кнопки всегда видны.
+        # Три колонки с зафиксированной шириной (без ползунка): провайдеры,
+        # модели и бесплатные. Веса задают добор ширины: панель «Бесплатно
+        # сегодня» получает больше всех — она почти вдвое шире исходной.
         cols = ttk.Frame(self.root)
         cols.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
         cols.grid_columnconfigure(0, weight=1)
         cols.grid_columnconfigure(1, weight=2)
-        cols.grid_columnconfigure(2, weight=1)
+        cols.grid_columnconfigure(2, weight=4)
         cols.grid_rowconfigure(0, weight=1)
 
         # left: providers list
@@ -717,13 +718,17 @@ class ChangeModelApp:
         ttk.Label(right, text="Модели", style="Title.TLabel").pack(anchor=tk.W, pady=(0, 2))
         self.models_list = tk.Listbox(right, exportselection=False, font=_FONT_BASE, activestyle="none", selectbackground=_ACCENT_BG, selectforeground=_ACCENT_FG, highlightthickness=1, highlightbackground="#d1d5db", relief="solid", borderwidth=1)
         self.models_list.pack(fill=tk.BOTH, expand=True)
+        # Две строки кнопок вместо одной: так колонка моделей требует меньше
+        # ширины, и она перераспределяется в пользу панели бесплатных моделей.
         btns_r = ttk.Frame(right)
         btns_r.pack(fill=tk.X, pady=(4, 0))
         ttk.Button(btns_r, text="Добавить", command=self.add_model).pack(side=tk.LEFT)
         ttk.Button(btns_r, text="Редактировать", command=self.edit_model).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(btns_r, text="Удалить", command=self.remove_model).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(btns_r, text="Подобрать", command=self.pick_models).pack(side=tk.RIGHT, padx=(0, 6))
-        ttk.Button(btns_r, text="Модель по умолчанию", command=self.set_default_model).pack(side=tk.RIGHT)
+        btns_r2 = ttk.Frame(right)
+        btns_r2.pack(fill=tk.X, pady=(4, 0))
+        ttk.Button(btns_r2, text="Подобрать", command=self.pick_models).pack(side=tk.LEFT)
+        ttk.Button(btns_r2, text="Модель по умолчанию", command=self.set_default_model).pack(side=tk.LEFT, padx=(6, 0))
 
         # right-most: бесплатные модели видны сразу, без кнопки
         free = ttk.Frame(cols, padding=(6, 0, 0, 0))
