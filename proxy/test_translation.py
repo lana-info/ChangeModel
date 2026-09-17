@@ -152,14 +152,16 @@ def test_vision_modalities_and_mark() -> None:
     )
     md._limits_cache["at"] = -1e18
     try:
-        assert md.model_input_modalities("glm-5.3-flash", "opencode-go") == ["text", "image", "video", "pdf"]
+        # video/pdf из models.dev отбрасываются: Codex их не принимает и
+        # роняет весь каталог («unknown variant `video`») — см. регрессию ниже.
+        assert md.model_input_modalities("glm-5.3-flash", "opencode-go") == ["text", "image"]
         assert md.vision_mark("glm-5.3-flash", "opencode-go") == " [img]"
         assert md.model_input_modalities("hy3", "opencode-go") == ["text"]
         assert md.vision_mark("hy3", "opencode-go") == ""
         assert md.model_input_modalities("no-mod-field", "opencode-go") == ["text"]  # нет поля modalities
         assert md.model_input_modalities("нет-такой", "opencode-go") == ["text"]  # неизвестная модель
         entry = md._catalog_entry("glm-5.3-flash", "GLM", "desc", None, "opencode-go")
-        assert entry["input_modalities"] == ["text", "image", "video", "pdf"]
+        assert entry["input_modalities"] == ["text", "image"]
     finally:
         md._fetch_models_dev = orig
         md._limits_cache["at"] = -1e18

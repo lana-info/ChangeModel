@@ -124,6 +124,12 @@ def model_input_modalities(model_id: str, provider: str | None = None) -> list[s
 
     models.dev отдаёт modalities.input списком; на всякий случай понимаем
     и строку вида "text image video".
+
+    ВАЖНО: Codex принимает в input_modalities только text/image/audio.
+    Значения video/pdf ломают декодирование ВСЕГО ответа /v1/models
+    («unknown variant `video`, expected one of `text`, `image`, `audio`»),
+    после чего в Codex пропадают все модели разом. Поэтому здесь белый список,
+    а не то, что пришло из models.dev.
     """
     entry = _cached_model_entry(model_id, provider)
     inp = (entry or {}).get("input", "")
@@ -134,7 +140,7 @@ def model_input_modalities(model_id: str, provider: str | None = None) -> list[s
     else:
         parts = []
     mods = ["text"]
-    for extra in ("image", "video", "audio", "pdf"):
+    for extra in ("image", "audio"):
         if extra in parts:
             mods.append(extra)
     return mods

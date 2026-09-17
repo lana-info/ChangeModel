@@ -289,6 +289,40 @@ def test_function_call_null_fields_are_safe() -> None:
     assert fn["arguments"] == "{}"
 
 
+def test_catalog_modalities_are_codex_compatible() -> None:
+    """input_modalities в каталоге — только text/image/audio.
+
+    Регрессия: значения video/pdf ломали декодирование ВСЕГО ответа
+    /v1/models («unknown variant `video`, expected one of
+    `text`, `image`, `audio`»), и в Codex исчезали все модели разом.
+    """
+    import models_data as md
+    import proxy.app as app
+
+    orig_fetch = md._fetch_models_dev
+    orig_providers = app.load_providers
+    # models.dev отдаёт в modalities.input лишние значения — они не должны просочиться
+    md._fetch_models_dev = lambda: (
+        {"p": {"m1": {"context": 1000, "output": 100, "input": ["text", "image", "video", "audio", "pdf"]}}},
+        {"m1": {"context": 1000, "output": 100, "input": ["text", "image", "video", "audio", "pdf"]}},
+    )
+    md._limits_cache["at"] = -1e18
+    app.load_providers = lambda: [{"id": "p", "name": "P", "models": [{"id": "m1", "name": "M1"}]}]
+    try:
+        entries = app.catalog_entries()
+        assert entries, "каталог не должен быть пустым"
+        allowed = {"text", "image", "audio"}
+        for e in entries:
+            assert set(e["input_modalities"]) <= allowed, e["input_modalities"]
+            assert "image" in e["input_modalities"]  # картинки сохраняются
+    finally:
+        md._fetch_models_dev = orig_fetch
+        md._limits_cache["at"] = -1e18
+        md._limits_cache["nested"] = None
+        md._limits_cache["flat"] = None
+        app.load_providers = orig_providers
+
+
 def test_gui_read_env_key_prefers_dotenv() -> None:
     """GUI читает ключ так же, как прокси: .env важнее переменной окружения."""
     import gui
