@@ -587,6 +587,48 @@ def test_passthrough_without_base_url_returns_400() -> None:
     assert "base_url" in json.loads(resp.body)["error"]["message"]
 
 
+class _FakePassthroughStream:
+    """Апстрим passthrough-стрима: отдаёт сырые SSE-байты."""
+
+    status_code = 200
+
+    def __init__(self, chunks) -> None:
+        self._chunks = chunks
+        self.closed = False
+
+    async def aiter_bytes(self):
+        for c in self._chunks:
+            yield c
+
+    async def aread(self):
+        return b""
+
+    async def aclose(self):
+        self.closed = True
+
+
+def test_passthrough_stream_forwards_sse() -> None:
+    """Регрессия: passthrough-стрим падал с TypeError («async with up») и 500,
+    из-за чего Codex показывал «stream disconnected before completion ...
+    error decoding response body» (OpenRouter и подобные)."""
+    provider = {
+        "id": "or",
+        "name": "OR",
+        "kind": "passthrough",
+        "base_url": "http://up.example/v1",
+        "env_key": "K",
+        "models": [{"id": "m1", "name": "M1"}],
+    }
+    upstream = _FakePassthroughStream([b"data: a\n\n", b"data: b\n\n"])
+    client = _FakeHttpClient(upstream)
+    with _Patch(load_providers=lambda: [provider], get_setting=lambda name: "k", http_client=lambda: client):
+        resp = asyncio.run(app_module.create_response(_make_request({"model": "m1", "stream": True})))
+        assert resp.status_code == 200
+        body = _collect_stream(resp)
+    assert "data: a" in body and "data: b" in body
+    assert upstream.closed  # соединение с апстримом закрыто
+
+
 def test_check_auth_host_and_origin() -> None:
     """Host — только localhost; Origin (его шлют браузеры) — только сам прокси."""
     req = lambda headers: type("R", (), {"headers": _FakeHeaders(headers)})()

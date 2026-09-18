@@ -43,7 +43,7 @@ PROVIDERS_FILE = BASE_DIR / "providers.json"
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "4096"))
 PROXY_HTTP = f"http://127.0.0.1:{PROXY_PORT}"
 
-APP_VERSION = "1.1.5"
+APP_VERSION = "1.1.6"
 GITHUB_REPO = "lana-info/ChangeModel"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases"

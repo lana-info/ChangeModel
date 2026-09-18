@@ -302,9 +302,13 @@ async def _passthrough(url: str, key: str, body: dict) -> JSONResponse | Streami
             return JSONResponse(payload, status_code=up.status_code)
 
         async def gen() -> AsyncIterator[bytes]:
-            async with up:
+            # httpx.Response не поддерживает «async with» (падало с TypeError
+            # и 500 посреди стрима) — закрываем соединение вручную.
+            try:
                 async for chunk in up.aiter_bytes():
                     yield chunk
+            finally:
+                await up.aclose()
 
         return StreamingResponse(
             gen(),
