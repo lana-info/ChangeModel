@@ -71,6 +71,26 @@ OPENCODE_UPSTREAM = os.environ.get("OPENCODE_GO_BASE_URL", models_data.UPSTREAM_
 # стабильным идентификатором — генерируем один на запуск прокси.
 OPENCODE_SESSION = "cm-" + uuid.uuid4().hex
 
+# Бесплатные модели Zen требуют заголовков идентификации клиента
+# (User-Agent + x-opencode-*), иначе сервер отвечает 429 FreeUsageLimitError.
+KNOWN_FREE_MODELS = {
+    "deepseek-v4-flash-free",
+    "mimo-v2.5-free",
+    "big-pickle",
+    "hy3-free",
+    "nemotron-3-ultra-free",
+    "nemotron-3.5-lightning-free",
+    "muse-spark-1.3-contributor-free",
+    "ling-3.0-flash-fin-free",
+}
+
+
+def is_free_model(model_id: str) -> bool:
+    """True, если модель бесплатная и требует заголовков OpenCode-клиента."""
+    if model_id in KNOWN_FREE_MODELS:
+        return True
+    return model_id.endswith("-free")
+
 
 def project_dir() -> str:
     if getattr(sys, "frozen", False):
@@ -530,21 +550,27 @@ def _error_body(status: int, message: str, code: str | None = None) -> dict:
 
 
 # ---------------------------------------------------------------- non-streaming (opencode-chat)
-def _upstream_headers(key: str) -> dict:
+def _upstream_headers(key: str, model_id: str = "") -> dict:
     """Заголовки для апстрима; без ключа Authorization не отправляем вовсе
     (пустой 'Bearer ' — невалидный заголовок для httpx). x-opencode-session
-    нужен апстримам OpenCode для маршрутизации (см. OPENCODE_SESSION)."""
+    нужен апстримам OpenCode для маршрутизации (см. OPENCODE_SESSION).
+    Для бесплатных моделей добавляем заголовки идентификации клиента,
+    иначе сервер отвечает 429 FreeUsageLimitError."""
     headers: dict = {"x-opencode-session": OPENCODE_SESSION}
     if key:
         headers["Authorization"] = f"Bearer {key}"
+    if is_free_model(model_id):
+        headers["User-Agent"] = "opencode-go-proxy/1.0"
+        headers["x-opencode-client"] = "cli"
+        headers["x-opencode-project"] = "global"
     return headers
 
 
-async def _handle_non_stream(chat: dict, upstream: str, key: str) -> JSONResponse:
+async def _handle_non_stream(chat: dict, upstream: str, key: str, model_id: str = "") -> JSONResponse:
     try:
         resp = await http_client().post(
             f"{upstream}/chat/completions",
-            headers=_upstream_headers(key),
+            headers=_upstream_headers(key, model_id),
             json=chat,
         )
     except httpx.HTTPError as e:
@@ -586,13 +612,13 @@ async def _open_stream(up: httpx.Response):
         await up.aclose()
 
 
-async def _handle_stream(chat: dict, upstream: str, key: str) -> StreamingResponse | JSONResponse:
+async def _handle_stream(chat: dict, upstream: str, key: str, model_id: str = "") -> StreamingResponse | JSONResponse:
     # Открываем апстрим до создания ответа: при ошибке отдаём честный
     # HTTP-статус с текстом, а не «поток с ошибкой» со статусом 200.
     req = http_client().build_request(
         "POST",
         f"{upstream}/chat/completions",
-        headers=_upstream_headers(key),
+        headers=_upstream_headers(key, model_id),
         json=chat,
     )
     try:
@@ -869,9 +895,10 @@ async def create_response(request: Request):
         # Ключ — из env_key конкретного провайдера (OPENCODE_GO_API_KEY,
         # OPENCODE_ZEN_API_KEY, ...), а не всегда от OpenCode Go.
         key = get_setting(provider.get("env_key", ""))
+        model_id = body["model"]
         if body.get("stream"):
-            return await _handle_stream(chat, upstream, key)
-        return await _handle_non_stream(chat, upstream, key)
+            return await _handle_stream(chat, upstream, key, model_id)
+        return await _handle_non_stream(chat, upstream, key, model_id)
 
     # Неизвестный kind — ошибка конфигурации; молча считать его passthrough
     # нельзя: запрос ушёл бы не в тот формат и не на тот адрес.

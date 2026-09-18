@@ -98,6 +98,23 @@ python generator.py --profile changemodel   # переключить Codex на 
   платные требуют баланса. Модели семейства Muse Spark дополнительно требуют
   согласия на использование данных — оно оформляется в настройках вашего
   workspace OpenCode, без него сервис отвечает ошибкой.
+
+  **Как получить бесплатный ключ Zen:**
+  1. Перейдите на [opencode.ai/auth](https://opencode.ai/auth) и
+     зарегистрируйтесь (через GitHub или Google — без банковской карты).
+  2. В личном кабинете выберите **OpenCode Zen** → **API Keys**.
+  3. Нажмите **«Create Key»** → скопируйте ключ (формат `sk-...`).
+  4. В окне ChangeModel: выберите провайдер **OpenCode Zen** →
+     «Редактировать» → вставьте ключ в поле «API-ключ» → Сохранить.
+     Либо пропишите в `proxy/.env`:
+     ```
+     OPENCODE_ZEN_API_KEY=sk-ваш-ключ
+     ```
+  5. Бесплатные модели (с суффиксом `-free` и `big-pickle`) работают
+     сразу — баланс пополнять не нужно.
+
+  **Лимит:** бесплатные модели делят квоту ~200 запросов в сутки на IP.
+  Для больше — OpenCode Go ($5/мес).
 - **GMI Cloud** — регистрация в консоли console.gmicloud.ai → Settings →
   API Keys (подробности: docs.gmicloud.ai, раздел Quickstart).
 - **Agent Router** — ключ выдаётся на сайте сервиса (agentrouter.org).
@@ -196,6 +213,23 @@ Where the keys come from:
   away; paid ones need balance. Muse Spark models additionally require
   data-usage consent in your OpenCode workspace settings, otherwise the
   service returns an error.
+
+  **How to get a free Zen key:**
+  1. Go to [opencode.ai/auth](https://opencode.ai/auth) and sign up
+     (via GitHub or Google — no credit card required).
+  2. In your dashboard, select **OpenCode Zen** → **API Keys**.
+  3. Click **"Create Key"** → copy the key (format `sk-...`).
+  4. In the ChangeModel window: select the **OpenCode Zen** provider →
+     Edit → paste the key in the "API key" field → Save.
+     Or set it in `proxy/.env`:
+     ```
+     OPENCODE_ZEN_API_KEY=sk-your-key-here
+     ```
+  5. Free models (with `-free` suffix and `big-pickle`) work immediately
+     — no balance top-up needed.
+
+  **Limit:** free models share a quota of ~200 requests per day per IP.
+  For more — OpenCode Go ($5/month).
 - **GMI Cloud** — sign up in the console at console.gmicloud.ai → Settings →
   API Keys (see docs.gmicloud.ai, Quickstart).
 - **Agent Router** — the key is issued on the service website (agentrouter.org).
