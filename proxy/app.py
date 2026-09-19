@@ -554,15 +554,17 @@ def _upstream_headers(key: str, model_id: str = "") -> dict:
     """Заголовки для апстрима; без ключа Authorization не отправляем вовсе
     (пустой 'Bearer ' — невалидный заголовок для httpx). x-opencode-session
     нужен апстримам OpenCode для маршрутизации (см. OPENCODE_SESSION).
-    Для бесплатных моделей добавляем заголовки идентификации клиента,
-    иначе сервер отвечает 429 FreeUsageLimitError."""
+    Для бесплатных моделей добавляем заголовки идентификации клиента
+    (User-Agent в формате opencode/<version> + x-opencode-*), иначе
+    сервер отвечает 403 FreeUsageLimitError."""
     headers: dict = {"x-opencode-session": OPENCODE_SESSION}
     if key:
         headers["Authorization"] = f"Bearer {key}"
     if is_free_model(model_id):
-        headers["User-Agent"] = "opencode-go-proxy/1.0"
+        headers["User-Agent"] = "opencode/0.1.0"
         headers["x-opencode-client"] = "cli"
         headers["x-opencode-project"] = "global"
+        headers["x-opencode-request"] = uuid.uuid4().hex[:16]
     return headers
 
 
