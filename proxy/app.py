@@ -29,6 +29,8 @@ import asyncio
 import json
 import logging
 import os
+import secrets
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -67,9 +69,34 @@ OPENCODE_UPSTREAM = os.environ.get("OPENCODE_GO_BASE_URL", models_data.UPSTREAM_
 
 # Апстримы OpenCode требуют заголовок x-opencode-session для маршрутизации:
 # без него Go отвечает 400 MissingSessionID, а free-модели Zen — ошибкой
-# «free tier can only be used in OpenCode». Значение может быть любым
-# стабильным идентификатором — генерируем один на запуск прокси.
-OPENCODE_SESSION = "cm-" + uuid.uuid4().hex
+# «free tier can only be used in OpenCode». Формат должен совпадать с
+# настоящим клиентом (ses_<12 hex ts><14 base62>, см. opencode
+# packages/core/src/id/id.ts), иначе backend отклоняет free-запросы.
+_OPENCODE_ID_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def _new_session_id() -> str:
+    """ses_<12 hex метки времени><14 случайных base62> — как у клиента opencode."""
+    ts_hex = f"{int(time.time() * 1000) << 12:012x}"[-12:]
+    rand = "".join(secrets.choice(_OPENCODE_ID_CHARS) for _ in range(14))
+    return f"ses_{ts_hex}{rand}"
+
+
+OPENCODE_SESSION = _new_session_id()
+
+# Версия в User-Agent должна выглядеть как актуальная версия клиента opencode
+# (проверяется backend'ом для free tier). При обновлении клиента стоит
+# поднимать и здесь. Можно переопределить через OPENCODE_CLIENT_VERSION.
+OPENCODE_CLIENT_VERSION = os.environ.get("OPENCODE_CLIENT_VERSION", "1.18.31")
+
+# x-opencode-request у настоящего клиента — id сообщения пользователя
+# (msg_<12 hex ts><14 base62>, см. 9router generateRequestId). Генерируется
+# на каждый запрос, а не переиспользуется.
+def _new_request_id() -> str:
+    """msg_<12 hex метки времени><14 случайных base62> — как у клиента opencode."""
+    ts_hex = f"{int(time.time() * 1000) << 12:012x}"[-12:]
+    rand = "".join(secrets.choice(_OPENCODE_ID_CHARS) for _ in range(14))
+    return f"msg_{ts_hex}{rand}"
 
 # Бесплатные модели Zen требуют заголовков идентификации клиента
 # (User-Agent + x-opencode-*), иначе сервер отвечает 429 FreeUsageLimitError.
@@ -554,18 +581,70 @@ def _upstream_headers(key: str, model_id: str = "") -> dict:
     """Заголовки для апстрима; без ключа Authorization не отправляем вовсе
     (пустой 'Bearer ' — невалидный заголовок для httpx). x-opencode-session
     нужен апстримам OpenCode для маршрутизации (см. OPENCODE_SESSION).
-    Для бесплатных моделей добавляем заголовки идентификации клиента
-    (User-Agent в формате opencode/<version> + x-opencode-*), иначе
-    сервер отвечает 403 FreeUsageLimitError."""
+    Для бесплатных моделей — контракт free tier Zen (замерен 2026-09-17,
+    см. 9router/OmniRoute): free tier идёт через общий пул 'public',
+    ключ пользователя не нужен и не отправляется."""
     headers: dict = {"x-opencode-session": OPENCODE_SESSION}
+    if is_free_model(model_id):
+        headers["Authorization"] = "Bearer public"
+        headers["User-Agent"] = f"opencode/{OPENCODE_CLIENT_VERSION}"
+        headers["x-opencode-client"] = "desktop"
+        headers["x-opencode-project"] = "global"
+        headers["x-opencode-request"] = _new_request_id()
+        return headers
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    if is_free_model(model_id):
-        headers["User-Agent"] = "opencode/0.1.0"
-        headers["x-opencode-client"] = "cli"
-        headers["x-opencode-project"] = "global"
-        headers["x-opencode-request"] = uuid.uuid4().hex[:16]
     return headers
+
+
+# ---------------------------------------------------------------- free-tier contract
+# Free tier Zen принимает только запросы по контракту (замерено сторонними
+# проектами 2026-09-17, подтверждено прямым тестом): stream:true в теле и
+# непустой tools. Пустые/отсутствующие tools дополняем приманками bash+read,
+# которые настоящий клиент opencode всегда имеет (см. 9router cloakOpencodeTools).
+_FREE_TIER_DECOY_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "bash",
+            "description": "This tool is currently unavailable and must not be used.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read",
+            "description": "This tool is currently unavailable and must not be used.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+]
+
+
+def _apply_free_tier_contract(chat: dict) -> dict:
+    """Приводит chat-тело к контракту free tier: stream:true + непустой tools.
+    Инструменты вызывающей стороны не трогаем; отсутствующие bash/read
+    добавляем приманками. Возвращает то же тело (мутирует)."""
+    chat["stream"] = True
+    tools = chat.get("tools")
+    if not isinstance(tools, list) or not tools:
+        chat["tools"] = [dict(t, function=dict(t["function"])) for t in _FREE_TIER_DECOY_TOOLS]
+        chat.setdefault("tool_choice", "none")
+        return chat
+    names = set()
+    for t in tools:
+        if isinstance(t, dict):
+            fn = t.get("function")
+            name = t.get("name") if isinstance(t.get("name"), str) else None
+            if not name and isinstance(fn, dict) and isinstance(fn.get("name"), str):
+                name = fn["name"]
+            if name:
+                names.add(name)
+    for decoy in _FREE_TIER_DECOY_TOOLS:
+        if decoy["function"]["name"] not in names:
+            tools.append(dict(decoy, function=dict(decoy["function"])))
+    return chat
 
 
 async def _handle_non_stream(chat: dict, upstream: str, key: str, model_id: str = "") -> JSONResponse:
@@ -600,6 +679,109 @@ async def _handle_non_stream(chat: dict, upstream: str, key: str, model_id: str 
         "output": items,
         "output_text": text,
         "usage": _usage_to_responses(data.get("usage")),
+    }
+    return JSONResponse(response)
+
+
+async def _handle_non_stream_forced_stream(chat: dict, upstream: str, key: str, model_id: str = "") -> JSONResponse:
+    """Free tier Zen принимает только stream-запросы: открываем SSE-стрим
+    апстрима и собираем его в обычный JSON-ответ для вызывающей стороны,
+    которая стрим не просила (см. 9router force-stream + aggregate)."""
+    req = http_client().build_request(
+        "POST",
+        f"{upstream}/chat/completions",
+        headers=_upstream_headers(key, model_id),
+        json=chat,
+    )
+    try:
+        up = await http_client().send(req, stream=True)
+    except httpx.HTTPError as e:
+        return JSONResponse(_error_body(502, f"Upstream request failed: {e}"), status_code=502)
+    if up.status_code != 200:
+        raw = await up.aread()
+        await up.aclose()
+        try:
+            up_json = json.loads(raw)
+            msg = (up_json.get("error") or {}).get("message") or raw.decode("utf-8", "replace")
+        except Exception:
+            msg = raw.decode("utf-8", "replace")
+        return JSONResponse(_error_body(up.status_code, str(msg)[:2000]), status_code=up.status_code)
+
+    text_parts: list[str] = []
+    tool_state: dict[int, dict] = {}
+    usage = None
+    pending = ""
+    try:
+        async for line in up.aiter_lines():
+            if not line.startswith("data:"):
+                if line == "":
+                    pending = ""
+                continue
+            payload = line[len("data:"):].strip()
+            if pending:
+                payload = pending + "\n" + payload
+                pending = ""
+            if payload == "[DONE]":
+                break
+            try:
+                chunk = json.loads(payload)
+            except Exception:
+                pending = payload
+                continue
+            if chunk.get("usage"):
+                usage = chunk["usage"]
+            choices = chunk.get("choices") or []
+            if not choices or not isinstance(choices[0], dict):
+                continue
+            first = choices[0]
+            delta = first.get("delta") or {}
+            content = delta.get("content")
+            if content is not None and content != "":
+                text_parts.append(content)
+            for tc in delta.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                tfn = tc.get("function")
+                if not isinstance(tfn, dict):
+                    tfn = {}
+                idx = tc.get("index", 0)
+                st = tool_state.get(idx)
+                if st is None:
+                    st = {
+                        "id": tc.get("id") or f"call_{uuid.uuid4().hex[:16]}",
+                        "name": tfn.get("name", ""),
+                        "args": "",
+                    }
+                    tool_state[idx] = st
+                else:
+                    if tc.get("id"):
+                        st["id"] = tc["id"]
+                    if tfn.get("name"):
+                        st["name"] = tfn["name"]
+                st["args"] += tfn.get("arguments") or ""
+    finally:
+        await up.aclose()
+
+    text = "".join(text_parts)
+    message: dict = {"role": "assistant", "content": text or None}
+    if tool_state:
+        message["tool_calls"] = [
+            {
+                "id": st["id"],
+                "type": "function",
+                "function": {"name": st["name"], "arguments": st["args"]},
+            }
+            for _, st in sorted(tool_state.items())
+        ]
+    items, out_text = _chat_message_to_items(message)
+    response = {
+        "id": "resp_" + uuid.uuid4().hex[:24],
+        "object": "response",
+        "status": "completed",
+        "model": chat.get("model"),
+        "output": items,
+        "output_text": out_text,
+        "usage": _usage_to_responses(usage),
     }
     return JSONResponse(response)
 
@@ -896,8 +1078,18 @@ async def create_response(request: Request):
             upstream = OPENCODE_UPSTREAM
         # Ключ — из env_key конкретного провайдера (OPENCODE_GO_API_KEY,
         # OPENCODE_ZEN_API_KEY, ...), а не всегда от OpenCode Go.
+        # Для free-моделей ключ не используется (идёт общий пул 'public',
+        # см. _upstream_headers).
         key = get_setting(provider.get("env_key", ""))
         model_id = body["model"]
+        if is_free_model(model_id):
+            # Free tier Zen принимает только stream-запросы с непустым tools.
+            chat = _apply_free_tier_contract(chat)
+            if body.get("stream"):
+                return await _handle_stream(chat, upstream, key, model_id)
+            # Вызывающая сторона стрим не просила: стриммим апстрим и
+            # собираем SSE в обычный JSON-ответ.
+            return await _handle_non_stream_forced_stream(chat, upstream, key, model_id)
         if body.get("stream"):
             return await _handle_stream(chat, upstream, key, model_id)
         return await _handle_non_stream(chat, upstream, key, model_id)
