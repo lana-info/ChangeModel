@@ -10,7 +10,7 @@ from PyInstaller.utils.hooks import collect_all
 # из providers.example.json при первом запуске (gui.ensure_data_file).
 datas = [('providers.example.json', '.')]
 binaries = []
-hiddenimports = ['proxy.app', 'models_data', 'generator']
+hiddenimports = ['proxy.app', 'models_data', 'generator', 'codex_accounts']
 tmp_ret = collect_all('uvicorn')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 

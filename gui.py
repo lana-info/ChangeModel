@@ -26,8 +26,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
+import codex_accounts
 import generator
 import models_data
 
@@ -43,7 +44,7 @@ PROVIDERS_FILE = BASE_DIR / "providers.json"
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "4096"))
 PROXY_HTTP = f"http://127.0.0.1:{PROXY_PORT}"
 
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.2.0"
 GITHUB_REPO = "lana-info/ChangeModel"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases"
@@ -437,13 +438,16 @@ class ChangeModelApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         root.title(f"Vibix ChangeModel {APP_VERSION} — модели для Codex")
-        root.geometry("1260x580")
+        root.geometry("1260x780")
 
         self.providers: list[dict] = []
         self._default_model = ""
         self.free_items: list[dict] = []
         self.free_shown: list[dict] = []
         self._status_thread: threading.Thread | None = None
+        self._accounts: list[dict] = []
+        self._accounts_thread: threading.Thread | None = None
+        self._live_after_id: str | None = None
         ensure_data_file()
         try:
             self.load_providers()
@@ -475,6 +479,24 @@ class ChangeModelApp:
         # активизации самого окна, а не на каждый клик по полям.
         if event.widget is self.root:
             self.update_status()
+
+    def on_close(self) -> None:
+        """Закрытие окна: останавливаем live-таймер, чтобы тики не дёргали
+        мёртвые виджеты и не плодили сетевые запросы после выхода."""
+        try:
+            self.live_var.set(False)
+        except Exception:
+            pass
+        if self._live_after_id:
+            try:
+                self.root.after_cancel(self._live_after_id)
+            except Exception:
+                pass
+            self._live_after_id = None
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     def start_proxy(self) -> None:
         """Запускает прокси в фоне, если он ещё не работает."""
@@ -745,6 +767,8 @@ class ChangeModelApp:
         ttk.Button(btns_f, text="Добавить", command=self.add_selected_free).pack(side=tk.LEFT)
         ttk.Button(btns_f, text="Обновить", command=self.refresh_free_news).pack(side=tk.RIGHT)
 
+        self._build_accounts_panel()
+
         self.status_var = tk.StringVar()
         statusbar = ttk.Frame(self.root)
         statusbar.pack(fill=tk.X, side=tk.BOTTOM)
@@ -761,6 +785,261 @@ class ChangeModelApp:
         self.root.update_idletasks()
         self.root.minsize(self.root.winfo_reqwidth(), 500)
         self.update_status()
+
+    # ---------- Codex-аккаунты (личный пул GPT-подписок) ----------
+    # Меняется только ~/.codex/auth.json; config.toml, плагины и skills
+    # не трогаются. После переключения Codex нужно перезапустить.
+    def _build_accounts_panel(self) -> None:
+        box = ttk.Frame(self.root, padding=(8, 0))
+        box.pack(fill=tk.X, padx=8, pady=(0, 8))
+        head = ttk.Frame(box)
+        head.pack(fill=tk.X)
+        ttk.Label(head, text="Codex-аккаунты (GPT-подписки)", style="Title.TLabel").pack(side=tk.LEFT)
+        self.accounts_hint = ttk.Label(
+            head, text="переключение меняет только auth.json · после — перезапустите Codex",
+            style="News.TLabel")
+        self.accounts_hint.pack(side=tk.RIGHT)
+
+        self.accounts_list = tk.Listbox(box, height=4, exportselection=False, font=_FONT_BASE,
+                                        activestyle="none", selectbackground=_ACCENT_BG,
+                                        selectforeground=_ACCENT_FG, highlightthickness=1,
+                                        highlightbackground="#d1d5db", relief="solid", borderwidth=1)
+        self.accounts_list.pack(fill=tk.X, pady=(2, 4))
+
+        row = ttk.Frame(box)
+        row.pack(fill=tk.X)
+        ttk.Button(row, text="Добавить текущий", command=self.accounts_add_current).pack(side=tk.LEFT)
+        ttk.Button(row, text="Импорт из файла…", command=self.accounts_import).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(row, text="Переключить", command=self.accounts_switch).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(row, text="Обновить лимиты", command=self.accounts_refresh_quotas).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(row, text="Удалить", command=self.accounts_remove).pack(side=tk.LEFT, padx=(6, 0))
+        self.live_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row, text="Live", variable=self.live_var,
+                        command=self.accounts_toggle_live).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Label(row, text="каждые").pack(side=tk.LEFT, padx=(6, 2))
+        self.live_interval = ttk.Entry(row, width=5)
+        self.live_interval.insert(0, "60")
+        self.live_interval.pack(side=tk.LEFT)
+        ttk.Label(row, text="сек").pack(side=tk.LEFT, padx=(2, 0))
+        self.refresh_accounts_list()
+
+    @staticmethod
+    def _fmt_resets(resets) -> str:
+        if resets is None:
+            return ""
+        try:
+            if isinstance(resets, (int, float)) and resets > 0:
+                # Маленькие значения — секунды до сброса (resets_in_seconds),
+                # большие — epoch. Граница 1e8: сейчас epoch ~1.7e9.
+                stamp = time.time() + resets if resets < 1e8 else resets
+                return time.strftime("%H:%M", time.localtime(stamp))
+            if isinstance(resets, str) and resets:
+                return resets[:16].replace("T", " ")
+        except Exception:
+            pass
+        return ""
+
+    def _account_line(self, acc: dict, active: bool) -> str:
+        name = codex_accounts.account_label(acc)
+        mark = "● " if active else "○ "
+        usage = acc.get("usage") or {}
+        if (usage.get("source") or "none") == "none":
+            return f"{mark}{name} — лимиты не запрашивались"
+        parts = []
+        prim = usage.get("primary")
+        if isinstance(prim, dict) and prim.get("used_percent") is not None:
+            left = max(0.0, 100.0 - float(prim["used_percent"]))
+            s = f"5ч: ост. {left:.0f}%"
+            r = self._fmt_resets(prim.get("resets_at"))
+            if r:
+                s += f" (сброс {r})"
+            parts.append(s)
+        sec = usage.get("secondary")
+        if isinstance(sec, dict) and sec.get("used_percent") is not None:
+            left = max(0.0, 100.0 - float(sec["used_percent"]))
+            s = f"нед: ост. {left:.0f}%"
+            r = self._fmt_resets(sec.get("resets_at"))
+            if r:
+                s += f" (сброс {r})"
+            parts.append(s)
+        credits = usage.get("credits") or {}
+        if isinstance(credits, dict) and credits.get("balance") is not None:
+            parts.append(f"кредиты: {credits['balance']:g}")
+        if acc.get("plan"):
+            parts.append(str(acc["plan"]))
+        refresh = usage.get("refresh") or {}
+        if refresh.get("status") not in ("ok", "not_requested", None):
+            err = refresh.get("http_status") or refresh.get("error_code") or "ошибка"
+            parts.append(f"[! {err}, показан кэш]")
+        body = " · ".join(parts) if parts else "нет данных"
+        upd = usage.get("updated_at") or 0
+        age = ""
+        if upd:
+            age = " · замер " + time.strftime("%H:%M", time.localtime(upd))
+        return f"{mark}{name} — {body}{age}"
+
+    def refresh_accounts_list(self) -> None:
+        try:
+            accounts, active = codex_accounts.list_accounts()
+        except Exception:
+            accounts, active = [], ""
+        self._accounts = accounts
+        self.accounts_list.delete(0, tk.END)
+        for acc in accounts:
+            self.accounts_list.insert(tk.END, self._account_line(acc, acc.get("account_key") == active))
+        if not accounts:
+            self.accounts_list.insert(tk.END, "Пусто — нажмите «Добавить текущий» после codex login")
+
+    def _selected_account_key(self) -> str | None:
+        sel = self.accounts_list.curselection()
+        if not sel or sel[0] >= len(self._accounts):
+            messagebox.showinfo("Codex-аккаунты", "Сначала выберите аккаунт в списке.")
+            return None
+        return self._accounts[sel[0]].get("account_key", "")
+
+    def accounts_add_current(self) -> None:
+        try:
+            ok, message = codex_accounts.add_current()
+        except Exception as e:
+            messagebox.showerror("Codex-аккаунты", str(e))
+            return
+        if not ok:
+            messagebox.showerror("Codex-аккаунты", message)
+            return
+        self.status_var.set(message)
+        self.refresh_accounts_list()
+
+    def accounts_import(self) -> None:
+        path = filedialog.askopenfilename(title="Выберите auth.json",
+                                          filetypes=[("JSON", "*.json"), ("Все файлы", "*.*")])
+        if not path:
+            return
+        try:
+            ok, message = codex_accounts.import_file(path)
+        except Exception as e:
+            messagebox.showerror("Codex-аккаунты", str(e))
+            return
+        if not ok:
+            messagebox.showerror("Codex-аккаунты", message)
+            return
+        self.status_var.set(message)
+        self.refresh_accounts_list()
+
+    @staticmethod
+    def _codex_running() -> list[str]:
+        """Имена запущенных процессов Codex (для предупреждения перед свитчем)."""
+        found: list[str] = []
+        try:
+            if sys.platform.startswith("win"):
+                r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True,
+                                   text=True, timeout=10)
+                for line in (r.stdout or "").splitlines():
+                    name = line.split('",')[0].strip('"').lower()
+                    if "codex" in name and name not in found:
+                        found.append(name)
+            else:
+                r = subprocess.run(["pgrep", "-l", "-i", "codex"], capture_output=True,
+                                   text=True, timeout=10)
+                for line in (r.stdout or "").splitlines():
+                    parts = line.split(None, 1)
+                    if len(parts) == 2 and parts[1] not in found:
+                        found.append(parts[1])
+        except Exception:
+            pass
+        return found
+
+    def accounts_switch(self) -> None:
+        key = self._selected_account_key()
+        if not key:
+            return
+        running = self._codex_running()
+        if running and not messagebox.askyesno(
+                "Codex-аккаунты",
+                "Codex сейчас запущен (" + ", ".join(running) + ").\n"
+                "Новый аккаунт вступит в силу только после перезапуска.\n\n"
+                "Переключить всё равно?"):
+            return
+        try:
+            ok, message = codex_accounts.switch(key)
+        except Exception as e:
+            messagebox.showerror("Codex-аккаунты", str(e))
+            return
+        if not ok:
+            messagebox.showerror("Codex-аккаунты", message)
+            return
+        messagebox.showinfo("Codex-аккаунты", message)
+        self.status_var.set(message)
+        self.refresh_accounts_list()
+
+    def accounts_remove(self) -> None:
+        key = self._selected_account_key()
+        if not key:
+            return
+        if not messagebox.askyesno("Codex-аккаунты", "Удалить аккаунт из пула?"):
+            return
+        try:
+            ok, message = codex_accounts.remove(key)
+        except Exception as e:
+            messagebox.showerror("Codex-аккаунты", str(e))
+            return
+        if not ok:
+            messagebox.showerror("Codex-аккаунты", message)
+            return
+        self.status_var.set(message)
+        self.refresh_accounts_list()
+
+    def accounts_refresh_quotas(self) -> None:
+        if self._accounts_thread and self._accounts_thread.is_alive():
+            return
+
+        def work() -> None:
+            try:
+                codex_accounts.refresh_all()
+                try:
+                    codex_accounts.refresh_names()
+                except Exception:
+                    pass
+            finally:
+                self._ui_call(self.refresh_accounts_list)
+
+        self.status_var.set("Запрашиваю лимиты…")
+        self._accounts_thread = threading.Thread(target=work, daemon=True)
+        self._accounts_thread.start()
+
+    def accounts_toggle_live(self) -> None:
+        if self.live_var.get():
+            try:
+                interval = max(30, int(self.live_interval.get() or "60"))
+            except ValueError:
+                interval = 60
+                self.live_interval.delete(0, tk.END)
+                self.live_interval.insert(0, "60")
+            self.status_var.set(f"Live-обновление лимитов каждые {interval} сек")
+            self.accounts_refresh_quotas()
+            self._schedule_live(interval)
+        elif self._live_after_id:
+            try:
+                self.root.after_cancel(self._live_after_id)
+            except Exception:
+                pass
+            self._live_after_id = None
+            self.status_var.set("Live-обновление выключено")
+
+    def _schedule_live(self, interval: int) -> None:
+        if not self.live_var.get():
+            return
+
+        def tick() -> None:
+            self._live_after_id = None
+            if not self.live_var.get():
+                return
+            self.accounts_refresh_quotas()
+            self._schedule_live(interval)
+
+        try:
+            self._live_after_id = self.root.after(interval * 1000, tick)
+        except Exception:
+            pass
 
     # ---------- helpers ----------
     def current_provider_index(self) -> int:
@@ -1554,7 +1833,8 @@ def main() -> None:
         run_proxy_process()
         return
     root = tk.Tk()
-    ChangeModelApp(root)
+    app = ChangeModelApp(root)
+    root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
 
 
