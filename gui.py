@@ -44,7 +44,7 @@ PROVIDERS_FILE = BASE_DIR / "providers.json"
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "4096"))
 PROXY_HTTP = f"http://127.0.0.1:{PROXY_PORT}"
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 GITHUB_REPO = "lana-info/ChangeModel"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases"
@@ -905,6 +905,17 @@ class ChangeModelApp:
             pass
         return ""
 
+    def _window_line(self, win: dict) -> str:
+        """'5ч: ост. 88% (сброс 14:30)' — подпись по длине окна в секундах."""
+        left = max(0.0, 100.0 - float(win["used_percent"]))
+        secs = win.get("window_seconds")
+        tag = "нед" if isinstance(secs, (int, float)) and secs > 6 * 3600 else "5ч"
+        s = f"{tag}: ост. {left:.0f}%"
+        r = self._fmt_resets(win.get("resets_at"))
+        if r:
+            s += f" (сброс {r})"
+        return s
+
     def _account_line(self, acc: dict, active: bool) -> str:
         name = codex_accounts.account_label(acc)
         mark = "● " if active else "○ "
@@ -914,23 +925,18 @@ class ChangeModelApp:
         parts = []
         prim = usage.get("primary")
         if isinstance(prim, dict) and prim.get("used_percent") is not None:
-            left = max(0.0, 100.0 - float(prim["used_percent"]))
-            s = f"5ч: ост. {left:.0f}%"
-            r = self._fmt_resets(prim.get("resets_at"))
-            if r:
-                s += f" (сброс {r})"
-            parts.append(s)
+            parts.append(self._window_line(prim))
         sec = usage.get("secondary")
         if isinstance(sec, dict) and sec.get("used_percent") is not None:
-            left = max(0.0, 100.0 - float(sec["used_percent"]))
-            s = f"нед: ост. {left:.0f}%"
-            r = self._fmt_resets(sec.get("resets_at"))
-            if r:
-                s += f" (сброс {r})"
-            parts.append(s)
+            parts.append(self._window_line(sec))
         credits = usage.get("credits") or {}
         if isinstance(credits, dict) and credits.get("balance") is not None:
             parts.append(f"кредиты: {credits['balance']:g}")
+        rc = usage.get("reset_credits")
+        if isinstance(rc, dict):
+            rc = rc.get("available_count")
+        if isinstance(rc, (int, float)):
+            parts.append(f"доп. сбросы: {int(rc)}")
         if acc.get("plan"):
             parts.append(str(acc["plan"]))
         refresh = usage.get("refresh") or {}

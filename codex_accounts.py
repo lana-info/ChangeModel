@@ -502,7 +502,13 @@ def _num(value, default=None):
 
 
 def _window(raw: dict | None) -> dict | None:
-    """Окно лимита из разных вариантов формата ответа."""
+    """Окно лимита из разных вариантов формата ответа.
+
+    Реальный wham/usage (см. тесты Loongphy/codex-auth):
+    {"used_percent", "limit_window_seconds", "reset_after_seconds", "reset_at"}.
+    resets_at хранит абсолютный epoch ИЛИ относительные секунды —
+    _fmt_resets в GUI различает их по величине.
+    """
     if not isinstance(raw, dict):
         return None
     used = None
@@ -518,16 +524,21 @@ def _window(raw: dict | None) -> dict | None:
     if used is None:
         return None
     resets = None
-    for key in ("resets_at", "reset_at", "reset_time", "resets_in_seconds"):
+    for key in ("reset_at", "resets_at", "reset_after_seconds", "resets_in_seconds",
+                "reset_time"):
         if raw.get(key) is not None:
             resets = raw.get(key)
             break
-    window = None
-    for key in ("window_minutes", "window_hours", "limit_window_seconds"):
-        if raw.get(key) is not None:
-            window = raw.get(key)
-            break
-    return {"used_percent": used, "resets_at": resets, "window": window}
+    seconds = None
+    if raw.get("limit_window_seconds") is not None:
+        seconds = _num(raw.get("limit_window_seconds"))
+    elif raw.get("window_minutes") is not None:
+        minutes = _num(raw.get("window_minutes"))
+        seconds = minutes * 60 if minutes is not None else None
+    elif raw.get("window_hours") is not None:
+        hours = _num(raw.get("window_hours"))
+        seconds = hours * 3600 if hours is not None else None
+    return {"used_percent": used, "resets_at": resets, "window_seconds": seconds}
 
 
 def parse_usage_payload(payload: dict) -> dict:
@@ -536,15 +547,21 @@ def parse_usage_payload(payload: dict) -> dict:
            "reset_credits": None, "plan": ""}
     if not isinstance(payload, dict):
         return out
-    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else payload
+    # окна живут в rate_limit (реальный формат), старые варианты — в usage/корне
+    rate = payload.get("rate_limit")
+    if not isinstance(rate, dict):
+        rate = payload.get("usage")
+    usage = rate if isinstance(rate, dict) else payload
     primary = None
     for key in ("primary_window", "primary", "five_hour", "rate_limit_window"):
-        primary = _window(usage.get(key)) if isinstance(usage, dict) else None
+        win = usage.get(key) if isinstance(usage, dict) else None
+        primary = _window(win)
         if primary:
             break
     secondary = None
     for key in ("secondary_window", "secondary", "weekly_window", "weekly"):
-        secondary = _window(usage.get(key)) if isinstance(usage, dict) else None
+        win = usage.get(key) if isinstance(usage, dict) else None
+        secondary = _window(win)
         if secondary:
             break
     # плоский формат: used_percent прямо в корне usage
@@ -556,11 +573,16 @@ def parse_usage_payload(payload: dict) -> dict:
         balance = _num(credits.get("balance"))
     elif credits is not None:
         balance = _num(credits)
+    reset_credits = payload.get("reset_credits")
+    if reset_credits is None:
+        reset_credits = payload.get("rate_limit_reset_credits")
+    if isinstance(reset_credits, dict):
+        reset_credits = reset_credits.get("available_count")
     out.update({
         "primary": primary,
         "secondary": secondary,
         "credits": {"balance": balance} if balance is not None else None,
-        "reset_credits": payload.get("reset_credits") or payload.get("rate_limit_reset_credits"),
+        "reset_credits": reset_credits,
         "plan": str(payload.get("plan_type") or payload.get("plan") or ""),
     })
     return out

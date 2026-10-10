@@ -191,6 +191,29 @@ def test_usage_parse_shapes() -> None:
     assert out3["primary"] is None
 
 
+def test_usage_parse_real_rate_limit_shape() -> None:
+    """Реальный формат wham/usage: окна в rate_limit, сбросы — секунды."""
+    payload = {
+        "plan_type": "plus",
+        "rate_limit": {
+            "primary_window": {"used_percent": 11, "limit_window_seconds": 18000,
+                               "reset_after_seconds": 16802, "reset_at": 1773491460},
+            "secondary_window": {"used_percent": 94, "limit_window_seconds": 604800,
+                                 "reset_after_seconds": 274961, "reset_at": 1773749620},
+        },
+        "credits": {"has_credits": False, "balance": None},
+        "rate_limit_reset_credits": {"available_count": 3},
+    }
+    out = ca.parse_usage_payload(payload)
+    assert out["primary"]["used_percent"] == 11
+    assert out["primary"]["window_seconds"] == 18000
+    assert out["primary"]["resets_at"] == 1773491460
+    assert out["secondary"]["window_seconds"] == 604800
+    assert out["credits"] is None
+    assert out["reset_credits"] == 3
+    assert out["plan"] == "plus"
+
+
 def test_refresh_failure_keeps_cache() -> None:
     """Сеть упала: refresh=False, старый кэш на месте."""
     with _Home() as home:
