@@ -44,7 +44,7 @@ PROVIDERS_FILE = BASE_DIR / "providers.json"
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "4096"))
 PROXY_HTTP = f"http://127.0.0.1:{PROXY_PORT}"
 
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.4.0"
 GITHUB_REPO = "lana-info/ChangeModel"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases"
@@ -724,11 +724,20 @@ class ChangeModelApp:
         self.mode_var = tk.StringVar()
         ttk.Label(modebox, textvariable=self.mode_var, style="News.TLabel").pack(side=tk.LEFT, padx=(8, 0))
 
+        # Вкладки: GPT-аккаунты отдельно, модели прокси отдельно.
+        # Переключатель режима — строкой выше, общий для обеих вкладок.
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        tab_gpt = ttk.Frame(self.notebook, padding=4)
+        tab_proxy = ttk.Frame(self.notebook, padding=4)
+        self.notebook.add(tab_gpt, text="GPT-аккаунты")
+        self.notebook.add(tab_proxy, text="Модели прокси")
+
         # Три колонки с зафиксированной шириной (без ползунка): провайдеры,
         # модели и бесплатные. Веса задают добор ширины: панель «Бесплатно
         # сегодня» получает больше всех — она почти вдвое шире исходной.
-        cols = ttk.Frame(self.root)
-        cols.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        cols = ttk.Frame(tab_proxy)
+        cols.pack(fill=tk.BOTH, expand=True)
         cols.grid_columnconfigure(0, weight=1)
         cols.grid_columnconfigure(1, weight=2)
         cols.grid_columnconfigure(2, weight=4)
@@ -780,7 +789,7 @@ class ChangeModelApp:
         ttk.Button(btns_f, text="Добавить", command=self.add_selected_free).pack(side=tk.LEFT)
         ttk.Button(btns_f, text="Обновить", command=self.refresh_free_news).pack(side=tk.RIGHT)
 
-        self._build_accounts_panel()
+        self._build_accounts_panel(tab_gpt)
 
         self.status_var = tk.StringVar()
         statusbar = ttk.Frame(self.root)
@@ -855,9 +864,9 @@ class ChangeModelApp:
     # ---------- Codex-аккаунты (личный пул GPT-подписок) ----------
     # Меняется только ~/.codex/auth.json; config.toml, плагины и skills
     # не трогаются. После переключения Codex нужно перезапустить.
-    def _build_accounts_panel(self) -> None:
-        box = ttk.Frame(self.root, padding=(8, 0))
-        box.pack(fill=tk.X, padx=8, pady=(0, 8))
+    def _build_accounts_panel(self, parent) -> None:
+        box = ttk.Frame(parent, padding=(4, 4))
+        box.pack(fill=tk.BOTH, expand=True)
         head = ttk.Frame(box)
         head.pack(fill=tk.X)
         ttk.Label(head, text="Codex-аккаунты (GPT-подписки)", style="Title.TLabel").pack(side=tk.LEFT)
@@ -870,7 +879,7 @@ class ChangeModelApp:
                                         activestyle="none", selectbackground=_ACCENT_BG,
                                         selectforeground=_ACCENT_FG, highlightthickness=1,
                                         highlightbackground="#d1d5db", relief="solid", borderwidth=1)
-        self.accounts_list.pack(fill=tk.X, pady=(2, 4))
+        self.accounts_list.pack(fill=tk.BOTH, expand=True, pady=(2, 4))
 
         row = ttk.Frame(box)
         row.pack(fill=tk.X)
