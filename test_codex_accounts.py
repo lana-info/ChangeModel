@@ -201,6 +201,55 @@ def test_import_from_file() -> None:
         assert imported["alias"] == "запасной"
 
 
+def test_refresh_does_not_clobber_concurrent_switch() -> None:
+    """Фоновый refresh не откатывает чужой switch: пишет только usage/plan."""
+    with _Home() as home:
+        (home / "auth.json").write_text(json.dumps(_auth("a@x.io", "u1", "acc1")), encoding="utf-8")
+        ca.add_current()
+        (home / "auth.json").write_text(json.dumps(_auth("b@x.io", "u2", "acc2")), encoding="utf-8")
+        ca.add_current()
+        accounts, _ = ca.list_accounts()
+        key_a = next(a["account_key"] for a in accounts if a["email"] == "a@x.io")
+        key_b = next(a["account_key"] for a in accounts if a["email"] == "b@x.io")
+
+        payload = {"plan_type": "plus",
+                   "usage": {"primary_window": {"used_percent": 10.0, "resets_at": 99}}}
+        orig = ca._http_get_json
+
+        def fake(url, access, account, timeout=15.0):
+            # имитация гонки: пока летела сеть, пользователь переключился на B
+            reg = ca.load_registry()
+            reg["active_account_key"] = key_b
+            ca.save_registry(reg)
+            return payload, 200, None
+
+        ca._http_get_json = fake
+        try:
+            ok, _ = ca.refresh_account(key_a)
+        finally:
+            ca._http_get_json = orig
+        assert ok
+        reg = ca.load_registry()
+        assert reg["active_account_key"] == key_b  # switch уцелел
+        assert reg["accounts"][key_a]["usage"]["source"] == "api"
+        assert reg["accounts"][key_a]["usage"]["primary"]["used_percent"] == 10.0
+
+
+def test_codex_home_env_used_as_is() -> None:
+    """Несуществующий CODEX_HOME не подменяется молча на ~/.codex."""
+    old = os.environ.get("CODEX_HOME")
+    try:
+        os.environ["CODEX_HOME"] = str(Path(tempfile.gettempdir()) / "cm-no-such-dir-xyz")
+        assert ca.codex_home().name == "cm-no-such-dir-xyz"
+        accounts, active = ca.list_accounts()
+        assert accounts == [] and active == ""
+    finally:
+        if old is None:
+            os.environ.pop("CODEX_HOME", None)
+        else:
+            os.environ["CODEX_HOME"] = old
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

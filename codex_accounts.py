@@ -26,6 +26,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -41,16 +42,25 @@ USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 ACCOUNTS_URL = "https://chatgpt.com/backend-api/accounts"
 USER_AGENT = "ChangeModel-accounts/1.0"
 
+# Замок на чтение-изменение-запись registry: фоновый refresh квот
+# (live-таймер/кнопка) и переключение в главном потоке делят один файл.
+# Refresh-пути пишут только свои поля (usage/имена) поверх свежего
+# registry, чтобы не откатывать чужой switch/add/remove.
+_REG_LOCK = threading.Lock()
+
 
 # ---------- пути ----------
 
 def codex_home() -> Path:
-    """Каталог Codex: CODEX_HOME, иначе ~/.codex (порядок как у codex-auth)."""
+    """Каталог Codex: CODEX_HOME, иначе ~/.codex (порядок как у codex-auth).
+
+    Значение CODEX_HOME используется как есть, даже если каталога пока нет:
+    молча подменять его на ~/.codex опаснее (пул и бэкапы уехали бы не туда,
+    куда смотрит пользователь). Подкаталоги пула создаются по требованию.
+    """
     env = os.environ.get("CODEX_HOME", "").strip()
     if env:
-        p = Path(env).expanduser()
-        if p.is_dir():
-            return p
+        return Path(env).expanduser()
     return Path.home() / ".codex"
 
 
@@ -382,15 +392,22 @@ def switch(account_key: str, home: Path | None = None,
                     pass
         # атомарная замена с сохранением режима живого файла
         fd, tmp = tempfile.mkstemp(dir=str(live.parent), suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(auth, f, ensure_ascii=False, indent=2)
-        if os.name == "posix":
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(auth, f, ensure_ascii=False, indent=2)
+            if os.name == "posix":
+                try:
+                    mode = live.stat().st_mode if live.exists() else 0o600
+                    os.chmod(tmp, mode)
+                except OSError:
+                    pass
+            os.replace(tmp, live)
+        except Exception:
             try:
-                mode = live.stat().st_mode if live.exists() else 0o600
-                os.chmod(tmp, mode)
+                os.unlink(tmp)
             except OSError:
                 pass
-        os.replace(tmp, live)
+            raise
     except OSError as e:
         return False, f"Не удалось переключить auth.json: {e}"
 
@@ -524,6 +541,23 @@ def parse_usage_payload(payload: dict) -> dict:
     return out
 
 
+def _merge_account_fields(account_key: str, home: Path | None,
+                          **fields) -> bool:
+    """Точечная запись полей аккаунта поверх свежего registry (под замком).
+
+    Refresh-пути меняют только свои поля (usage/plan/имена) и никогда
+    не перезаписывают active_account_key чужим устаревшим слепком.
+    """
+    with _REG_LOCK:
+        reg = load_registry(home)
+        acc = reg["accounts"].get(account_key)
+        if acc is None:
+            return False
+        acc.update(fields)
+        save_registry(reg, home)
+    return True
+
+
 def refresh_account(account_key: str, timeout: float = 15.0,
                     home: Path | None = None) -> tuple[bool, str]:
     """Свежие квоты одного аккаунта по его слепку → кэш в registry."""
@@ -542,19 +576,18 @@ def refresh_account(account_key: str, timeout: float = 15.0,
     usage = acc.get("usage") if isinstance(acc.get("usage"), dict) else _blank_usage()
     usage["refresh"] = {"requested": True, "method": "api", "status": "error",
                         "http_status": None, "error_code": None}
+    plan_update: dict = {}
     if not isinstance(access, str) or not access or not account_id:
         usage["refresh"]["status"] = "missing_auth"
         usage["refresh"]["error_code"] = "MissingAuth"
-        acc["usage"] = usage
-        save_registry(reg, home)
+        _merge_account_fields(account_key, home, usage=usage)
         return False, "Нет токенов для запроса квот."
     payload, status, err = _http_get_json(USAGE_URL, access, account_id, timeout)
     if payload is None:
         usage["refresh"]["status"] = "http_error" if status else "error"
         usage["refresh"]["http_status"] = status
         usage["refresh"]["error_code"] = err
-        acc["usage"] = usage  # старый кэш остаётся видимым
-        save_registry(reg, home)
+        _merge_account_fields(account_key, home, usage=usage)  # старый кэш остаётся видимым
         if status == 401:
             return False, "401: токен протух — войдите заново (`codex login`) и добавьте аккаунт."
         if status == 403:
@@ -565,11 +598,10 @@ def refresh_account(account_key: str, timeout: float = 15.0,
                   "primary": parsed["primary"], "secondary": parsed["secondary"],
                   "credits": parsed["credits"], "reset_credits": parsed["reset_credits"]})
     if parsed["plan"]:
-        acc["plan"] = _normalize_plan(parsed["plan"])
+        plan_update = {"plan": _normalize_plan(parsed["plan"])}
     usage["refresh"] = {"requested": True, "method": "api", "status": "ok",
                         "http_status": status or 200, "error_code": None}
-    acc["usage"] = usage
-    save_registry(reg, home)
+    _merge_account_fields(account_key, home, usage=usage, **plan_update)
     return True, "Квоты обновлены."
 
 
@@ -592,8 +624,7 @@ def _normalize_plan(plan: str) -> str:
 def refresh_names(timeout: float = 15.0, home: Path | None = None) -> None:
     """Имена аккаунтов из /backend-api/accounts (не критично, ошибки молча)."""
     reg = load_registry(home)
-    changed = False
-    for key, acc in reg["accounts"].items():
+    for key, acc in list(reg["accounts"].items()):
         try:
             with open(_snapshot_path(key, home), encoding="utf-8") as f:
                 auth = json.load(f)
@@ -619,10 +650,7 @@ def refresh_names(timeout: float = 15.0, home: Path | None = None) -> None:
             if name is None and items and isinstance(items[0], dict):
                 name = items[0].get("name")
         if isinstance(name, str) and name.strip() and acc.get("account_name") != name.strip():
-            acc["account_name"] = name.strip()
-            changed = True
-    if changed:
-        save_registry(reg, home)
+            _merge_account_fields(key, home, account_name=name.strip())
 
 
 # ---------- обслуживание ----------

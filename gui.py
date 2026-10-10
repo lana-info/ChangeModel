@@ -480,6 +480,24 @@ class ChangeModelApp:
         if event.widget is self.root:
             self.update_status()
 
+    def on_close(self) -> None:
+        """Закрытие окна: останавливаем live-таймер, чтобы тики не дёргали
+        мёртвые виджеты и не плодили сетевые запросы после выхода."""
+        try:
+            self.live_var.set(False)
+        except Exception:
+            pass
+        if self._live_after_id:
+            try:
+                self.root.after_cancel(self._live_after_id)
+            except Exception:
+                pass
+            self._live_after_id = None
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
     def start_proxy(self) -> None:
         """Запускает прокси в фоне, если он ещё не работает."""
 
@@ -811,7 +829,10 @@ class ChangeModelApp:
             return ""
         try:
             if isinstance(resets, (int, float)) and resets > 0:
-                return time.strftime("%H:%M", time.localtime(resets))
+                # Маленькие значения — секунды до сброса (resets_in_seconds),
+                # большие — epoch. Граница 1e8: сейчас epoch ~1.7e9.
+                stamp = time.time() + resets if resets < 1e8 else resets
+                return time.strftime("%H:%M", time.localtime(stamp))
             if isinstance(resets, str) and resets:
                 return resets[:16].replace("T", " ")
         except Exception:
@@ -1812,7 +1833,8 @@ def main() -> None:
         run_proxy_process()
         return
     root = tk.Tk()
-    ChangeModelApp(root)
+    app = ChangeModelApp(root)
+    root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
 
 
