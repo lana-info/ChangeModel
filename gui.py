@@ -44,7 +44,7 @@ PROVIDERS_FILE = BASE_DIR / "providers.json"
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "4096"))
 PROXY_HTTP = f"http://127.0.0.1:{PROXY_PORT}"
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 GITHUB_REPO = "lana-info/ChangeModel"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases"
@@ -711,6 +711,19 @@ class ChangeModelApp:
         if sys.platform.startswith("win"):
             ttk.Checkbutton(row2, text="Автозапуск прокси при включении Windows", variable=self.autostart_var, command=self.toggle_autostart).pack(side=tk.LEFT, padx=(12, 0))
 
+        # Режим Codex в одном месте: GPT-подписка (встроенные модели Codex,
+        # лимиты выбранного GPT-аккаунта) или сторонние модели через прокси
+        # (ключи провайдеров, GPT-аккаунт не используется).
+        modebox = ttk.Frame(self.root, padding=(8, 0))
+        modebox.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(modebox, text="Режим Codex:", style="Title.TLabel").pack(side=tk.LEFT)
+        self.mode_gpt_btn = ttk.Button(modebox, text="GPT-подписка", command=self.set_mode_gpt)
+        self.mode_gpt_btn.pack(side=tk.LEFT, padx=(8, 0))
+        self.mode_proxy_btn = ttk.Button(modebox, text="Сторонние модели (прокси)", command=self.set_mode_proxy)
+        self.mode_proxy_btn.pack(side=tk.LEFT, padx=(6, 0))
+        self.mode_var = tk.StringVar()
+        ttk.Label(modebox, textvariable=self.mode_var, style="News.TLabel").pack(side=tk.LEFT, padx=(8, 0))
+
         # Три колонки с зафиксированной шириной (без ползунка): провайдеры,
         # модели и бесплатные. Веса задают добор ширины: панель «Бесплатно
         # сегодня» получает больше всех — она почти вдвое шире исходной.
@@ -786,6 +799,59 @@ class ChangeModelApp:
         self.root.minsize(self.root.winfo_reqwidth(), 500)
         self.update_status()
 
+    # ---------- режим Codex: GPT-подписка / сторонние модели ----------
+    def current_mode(self) -> str:
+        """'proxy' если Codex смотрит на прокси, иначе 'gpt'."""
+        try:
+            import tomllib
+            path = os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
+            with open(os.path.join(path, "config.toml"), "rb") as f:
+                d = tomllib.load(f)
+            if d.get("model_provider") == "changemodel":
+                return "proxy"
+        except Exception:
+            pass
+        return "gpt"
+
+    def refresh_mode_panel(self) -> None:
+        try:
+            mode = self.current_mode()
+        except Exception:
+            mode = "gpt"
+        try:
+            label, _key = codex_accounts.active_identity()
+        except Exception:
+            label = ""
+        try:
+            active_model = self.read_active_model()
+        except Exception:
+            active_model = None
+        if mode == "gpt":
+            self.mode_gpt_btn.state(["disabled"])
+            self.mode_proxy_btn.state(["!disabled"])
+            self.mode_var.set(f"сейчас: GPT ({label or 'аккаунт?'}) — переключение ниже")
+        else:
+            self.mode_proxy_btn.state(["disabled"])
+            self.mode_gpt_btn.state(["!disabled"])
+            self.mode_var.set(f"сейчас: прокси ({active_model or '?'}) — GPT-аккаунт не используется")
+
+    def set_mode_gpt(self) -> None:
+        """Режим GPT-подписки: встроенные модели Codex, лимиты активного аккаунта."""
+        if self._apply_profile("base"):
+            self.refresh_mode_panel()
+            self.update_status()
+
+    def set_mode_proxy(self) -> None:
+        """Режим сторонних моделей: всё через прокси (нужен запущенный прокси)."""
+        if self.is_proxy_running():
+            if self._apply_profile("changemodel"):
+                self.refresh_mode_panel()
+                self.update_status()
+        else:
+            # start_proxy сам применит профиль changemodel после запуска
+            self.start_proxy()
+            self.root.after(11000, self.refresh_mode_panel)
+
     # ---------- Codex-аккаунты (личный пул GPT-подписок) ----------
     # Меняется только ~/.codex/auth.json; config.toml, плагины и skills
     # не трогаются. После переключения Codex нужно перезапустить.
@@ -800,7 +866,7 @@ class ChangeModelApp:
             style="News.TLabel")
         self.accounts_hint.pack(side=tk.RIGHT)
 
-        self.accounts_list = tk.Listbox(box, height=4, exportselection=False, font=_FONT_BASE,
+        self.accounts_list = tk.Listbox(box, height=10, exportselection=False, font=_FONT_BASE,
                                         activestyle="none", selectbackground=_ACCENT_BG,
                                         selectforeground=_ACCENT_FG, highlightthickness=1,
                                         highlightbackground="#d1d5db", relief="solid", borderwidth=1)
@@ -970,6 +1036,18 @@ class ChangeModelApp:
         messagebox.showinfo("Codex-аккаунты", message)
         self.status_var.set(message)
         self.refresh_accounts_list()
+        try:
+            self.refresh_mode_panel()
+        except Exception:
+            pass
+        try:
+            if self.current_mode() == "proxy":
+                messagebox.showinfo(
+                    "Codex-аккаунты",
+                    "Аккаунт переключён, но сейчас активен режим прокси —\n"
+                    "GPT-аккаунт вступит в силу после перехода в режим «GPT-подписка».")
+        except Exception:
+            pass
 
     def accounts_remove(self) -> None:
         key = self._selected_account_key()
@@ -1109,6 +1187,10 @@ class ChangeModelApp:
                     self.status_var.set(f"{proxy_text}  |  Активна модель: {active}")
                 else:
                     self.status_var.set(f"{proxy_text}  |  Встроенные модели Codex (Luna)")
+                try:
+                    self.refresh_mode_panel()
+                except Exception:
+                    pass
 
             self._ui_call(apply)
 

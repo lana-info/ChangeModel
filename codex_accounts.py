@@ -125,12 +125,19 @@ def parse_identity(auth: dict) -> dict | None:
     if not isinstance(access, str) or not access:
         return None
     claims = _jwt_payload(id_token) if isinstance(id_token, str) else {}
+    # Новые токены кладут идентификаторы во вложенный объект
+    # "https://api.openai.com/auth", старые — в корень payload.
+    inner = claims.get("https://api.openai.com/auth")
+    if not isinstance(inner, dict):
+        inner = {}
     account_id = tokens.get("account_id") or ""
+    if not isinstance(account_id, str) or not account_id:
+        account_id = inner.get("chatgpt_account_id") or ""
     if not isinstance(account_id, str) or not account_id:
         account_id = claims.get("https://api.openai.com/auth.chatgpt_account_id") or ""
     if not isinstance(account_id, str) or not account_id:
         # запасной путь для phone-login файлов: первая организация
-        orgs = claims.get("https://api.openai.com/auth.organizations") or []
+        orgs = inner.get("organizations") or claims.get("https://api.openai.com/auth.organizations") or []
         if isinstance(orgs, list):
             default = next(
                 (o for o in orgs if isinstance(o, dict) and o.get("is_default") and o.get("id")),
@@ -139,15 +146,24 @@ def parse_identity(auth: dict) -> dict | None:
             first = default or next((o for o in orgs if isinstance(o, dict) and o.get("id")), None)
             if first:
                 account_id = first["id"]
-    user_id = claims.get("chatgpt_user_id") or claims.get("user_id") or ""
+    user_id = (
+        inner.get("chatgpt_user_id")
+        or inner.get("user_id")
+        or claims.get("chatgpt_user_id")
+        or claims.get("user_id")
+        or claims.get("sub")
+        or ""
+    )
     email = claims.get("email") or auth.get("email") or ""
     if not isinstance(user_id, str) or not user_id or not account_id:
         return None
+    plan = inner.get("chatgpt_plan_type") or ""
     return {
         "account_key": f"{user_id}::{account_id}",
         "email": str(email).lower() if isinstance(email, str) else "",
         "auth_mode": str(auth.get("auth_mode") or "chatgpt"),
         "chatgpt_account_id": account_id,
+        "plan": str(plan) if isinstance(plan, str) else "",
     }
 
 
@@ -269,7 +285,12 @@ def add_current(alias: str = "", home: Path | None = None) -> tuple[bool, str]:
         return False, f"Не читается {live_auth_path(home)}: {e}"
     ident = parse_identity(auth)
     if ident is None:
-        return False, "Активный auth.json неполный (нет токенов) — сначала выполните `codex login`."
+        return False, (
+            "Активный auth.json не похож на вход через ChatGPT "
+            f"({live_auth_path(home)}): нет идентификаторов аккаунта.\n\n"
+            "Войдите командой `codex login` и попробуйте снова —\n"
+            "либо добавьте аккаунт через «Импорт из файла»."
+        )
     key = ident["account_key"]
     now = int(time.time())
     reg = load_registry(home)
@@ -279,6 +300,8 @@ def add_current(alias: str = "", home: Path | None = None) -> tuple[bool, str]:
                 "chatgpt_account_id": ident["chatgpt_account_id"],
                 "snapshot": snapshot_filename(key),
                 "last_used_at": now})
+    if ident.get("plan") and not acc.get("plan"):
+        acc["plan"] = _normalize_plan(ident["plan"])
     if alias:
         acc["alias"] = alias
     acc.setdefault("usage", _blank_usage())
@@ -314,6 +337,8 @@ def import_file(path: str | Path, alias: str = "", home: Path | None = None) -> 
                 "chatgpt_account_id": ident["chatgpt_account_id"],
                 "snapshot": snapshot_filename(key),
                 "last_used_at": acc.get("last_used_at", now)})
+    if ident.get("plan") and not acc.get("plan"):
+        acc["plan"] = _normalize_plan(ident["plan"])
     if alias:
         acc["alias"] = alias
     acc.setdefault("usage", _blank_usage())
@@ -713,3 +738,25 @@ def rebuild(home: Path | None = None) -> str:
 
 def account_label(acc: dict) -> str:
     return acc.get("alias") or acc.get("account_name") or acc.get("email") or acc.get("account_key", "?")
+
+
+def active_identity(home: Path | None = None) -> tuple[str, str]:
+    """Метка и ключ ЖИВОГО ~/.codex/auth.json (что реально использует Codex).
+
+    Возвращает ("", "") если файл отсутствует/битый. Псевдоним подтягивается
+    из пула, если живой аккаунт в нём есть.
+    """
+    try:
+        with open(live_auth_path(home), encoding="utf-8") as f:
+            auth = json.load(f)
+    except (OSError, ValueError):
+        return "", ""
+    ident = parse_identity(auth)
+    if ident is None:
+        return "", ""
+    key = ident["account_key"]
+    reg = load_registry(home)
+    acc = reg["accounts"].get(key)
+    if acc is not None:
+        return account_label(acc), key
+    return ident["email"] or key, key

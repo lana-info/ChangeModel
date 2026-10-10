@@ -27,6 +27,40 @@ def _jwt(email: str, user_id: str, account_id: str = "") -> str:
     return f"{header}.{b64(payload)}.sig"
 
 
+def _jwt_nested(email: str, user_id: str, account_id: str, plan: str = "plus") -> str:
+    """Новая форма токена: идентификаторы во вложенном объекте auth (без
+    account_id в tokens и без user-claims в корне)."""
+    def b64(obj: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
+
+    header = b64({"alg": "RS256", "typ": "JWT"})
+    payload = {
+        "email": email,
+        "sub": f"sub-{user_id}",
+        "https://api.openai.com/auth": {
+            "chatgpt_user_id": user_id,
+            "user_id": user_id,
+            "chatgpt_account_id": account_id,
+            "chatgpt_plan_type": plan,
+            "organizations": [],
+        },
+    }
+    return f"{header}.{b64(payload)}.sig"
+
+
+def _auth_nested(email: str, user: str, account: str) -> dict:
+    return {
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "id_token": _jwt_nested(email, user, account),
+            "access_token": f"access-{user}",
+            "refresh_token": f"refresh-{user}",
+            "account_id": "",
+        },
+        "last_refresh": "2026-10-09T00:00:00Z",
+    }
+
+
 def _auth(email: str, user: str, account: str) -> dict:
     return {
         "auth_mode": "chatgpt",
@@ -248,6 +282,37 @@ def test_codex_home_env_used_as_is() -> None:
             os.environ.pop("CODEX_HOME", None)
         else:
             os.environ["CODEX_HOME"] = old
+
+
+def test_active_identity() -> None:
+    """Метка живого auth.json: с псевдонимом из пула и без него."""
+    with _Home() as home:
+        assert ca.active_identity() == ("", "")
+        (home / "auth.json").write_text(json.dumps(_auth("a@x.io", "u1", "acc1")), encoding="utf-8")
+        label, key = ca.active_identity()
+        assert label == "a@x.io" and key == "u1::acc1"
+        ca.add_current()
+        ca.set_alias(key, "основной")
+        label, key2 = ca.active_identity()
+        assert label == "основной" and key2 == key
+        (home / "auth.json").write_text("{broken", encoding="utf-8")
+        assert ca.active_identity() == ("", "")
+
+
+def test_nested_claim_shape() -> None:
+    """Форма токена с вложенным https://api.openai.com/auth и пустым
+    tokens.account_id разбирается, план подхватывается."""
+    with _Home() as home:
+        (home / "auth.json").write_text(
+            json.dumps(_auth_nested("n@x.io", "u9", "acc9")), encoding="utf-8")
+        ok, msg = ca.add_current()
+        assert ok, msg
+        accounts, active = ca.list_accounts()
+        assert len(accounts) == 1
+        assert accounts[0]["email"] == "n@x.io"
+        assert accounts[0]["account_key"] == "u9::acc9"
+        assert accounts[0]["plan"] == "plus"
+        assert active == "u9::acc9"
 
 
 if __name__ == "__main__":
