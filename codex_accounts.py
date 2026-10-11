@@ -199,7 +199,6 @@ def _blank_registry() -> dict:
         "schema_version": SCHEMA_VERSION,
         "active_account_key": "",
         "previous_active_account_key": "",
-        "interval_seconds": 60,
         "accounts": {},
     }
 
@@ -243,16 +242,29 @@ def load_registry(home: Path | None = None) -> dict:
         val = data.get(field)
         if isinstance(val, str) and val in reg["accounts"]:
             reg[field] = val
-    interval = data.get("interval_seconds")
-    if isinstance(interval, (int, float)) and 5 <= interval <= 3600:
-        reg["interval_seconds"] = int(interval)
     return reg
 
 
 def save_registry(reg: dict, home: Path | None = None) -> None:
-    reg = dict(reg)
-    reg["schema_version"] = SCHEMA_VERSION
+    """Запись registry. Внутренний код должен звать update_registry()."""
     _atomic_write_json(pool_dir(home) / REGISTRY_FILE, reg)
+
+
+def update_registry(mutate, home: Path | None = None) -> dict:
+    """Читает registry, применяет mutate(reg) под замком и записывает.
+
+    Единая точка всех изменений пула: исключает гонку «фоновый refresh квот
+    против switch/add/remove в главном потоке GUI». mutate возвращает то,
+    что нужно наружу (обычно (ok, message)); возвращает None, если аккаунт
+    не найден.
+    """
+    with _REG_LOCK:
+        reg = load_registry(home)
+        result = mutate(reg)
+        if result is None:
+            return reg, None
+        save_registry(reg, home)
+        return reg, result
 
 
 def _snapshot_path(account_key: str, home: Path | None = None) -> Path:
@@ -276,6 +288,38 @@ def list_accounts(home: Path | None = None) -> tuple[list[dict], str]:
 
 # ---------- добавление ----------
 
+def _register_account(reg: dict, ident: dict, auth: dict, alias: str,
+                      touch: bool) -> tuple[bool, str]:
+    """Добавляет/обновляет запись аккаунта в переданном registry.
+
+    Вызывается под update_registry (замок уже взят). Слепок пишется здесь же.
+    """
+    key = ident["account_key"]
+    now = int(time.time())
+    acc = reg["accounts"].get(key)
+    if acc is None:
+        acc = {"account_key": key, "usage": _blank_usage(), "created_at": now}
+    acc.update({"email": ident["email"], "auth_mode": ident["auth_mode"],
+                "chatgpt_account_id": ident["chatgpt_account_id"],
+                "snapshot": snapshot_filename(key)})
+    acc.setdefault("usage", _blank_usage())
+    if ident.get("plan") and not acc.get("plan"):
+        acc["plan"] = _normalize_plan(ident["plan"])
+    if alias:
+        acc["alias"] = alias
+    if touch:
+        acc["last_used_at"] = now
+    try:
+        _write_snapshot(key, auth)
+    except OSError as e:
+        return False, f"Не удалось сохранить слепок: {e}"
+    reg["accounts"][key] = acc
+    if not reg.get("active_account_key"):
+        reg["active_account_key"] = key
+    label = acc.get("alias") or ident["email"] or key
+    return True, label
+
+
 def add_current(alias: str = "", home: Path | None = None) -> tuple[bool, str]:
     """Слепок активного ~/.codex/auth.json в пул (после `codex login`)."""
     try:
@@ -291,30 +335,14 @@ def add_current(alias: str = "", home: Path | None = None) -> tuple[bool, str]:
             "Войдите командой `codex login` и попробуйте снова —\n"
             "либо добавьте аккаунт через «Импорт из файла»."
         )
-    key = ident["account_key"]
-    now = int(time.time())
-    reg = load_registry(home)
-    acc = reg["accounts"].get(key, {"account_key": key, "usage": _blank_usage(),
-                                    "created_at": now})
-    acc.update({"email": ident["email"], "auth_mode": ident["auth_mode"],
-                "chatgpt_account_id": ident["chatgpt_account_id"],
-                "snapshot": snapshot_filename(key),
-                "last_used_at": now})
-    if ident.get("plan") and not acc.get("plan"):
-        acc["plan"] = _normalize_plan(ident["plan"])
-    if alias:
-        acc["alias"] = alias
-    acc.setdefault("usage", _blank_usage())
-    reg["accounts"][key] = acc
-    try:
-        _write_snapshot(key, auth, home)
-    except OSError as e:
-        return False, f"Не удалось сохранить слепок: {e}"
-    if not reg.get("active_account_key"):
-        reg["active_account_key"] = key
-    save_registry(reg, home)
-    label = acc.get("alias") or ident["email"] or key
-    return True, f"Аккаунт добавлен: {label}"
+
+    def mutate(reg: dict):
+        return _register_account(reg, ident, auth, alias, touch=True)
+
+    _reg, result = update_registry(mutate, home)
+    if not result[0]:
+        return result
+    return True, f"Аккаунт добавлен: {result[1]}"
 
 
 def import_file(path: str | Path, alias: str = "", home: Path | None = None) -> tuple[bool, str]:
@@ -328,45 +356,47 @@ def import_file(path: str | Path, alias: str = "", home: Path | None = None) -> 
     ident = parse_identity(auth)
     if ident is None:
         return False, "Файл не похож на auth.json Codex (нет токенов/идентификаторов)."
-    key = ident["account_key"]
-    now = int(time.time())
-    reg = load_registry(home)
-    acc = reg["accounts"].get(key, {"account_key": key, "usage": _blank_usage(),
-                                    "created_at": now})
-    acc.update({"email": ident["email"], "auth_mode": ident["auth_mode"],
-                "chatgpt_account_id": ident["chatgpt_account_id"],
-                "snapshot": snapshot_filename(key),
-                "last_used_at": acc.get("last_used_at", now)})
-    if ident.get("plan") and not acc.get("plan"):
-        acc["plan"] = _normalize_plan(ident["plan"])
-    if alias:
-        acc["alias"] = alias
-    acc.setdefault("usage", _blank_usage())
-    reg["accounts"][key] = acc
-    try:
-        _write_snapshot(key, auth, home)
-    except OSError as e:
-        return False, f"Не удалось сохранить слепок: {e}"
-    save_registry(reg, home)
-    label = acc.get("alias") or ident["email"] or key
-    return True, f"Аккаунт импортирован: {label}"
+
+    def mutate(reg: dict):
+        return _register_account(reg, ident, auth, alias, touch=False)
+
+    _reg, result = update_registry(mutate, home)
+    if not result[0]:
+        return result
+    return True, f"Аккаунт импортирован: {result[1]}"
 
 
 def set_alias(account_key: str, alias: str, home: Path | None = None) -> bool:
-    reg = load_registry(home)
-    acc = reg["accounts"].get(account_key)
-    if acc is None:
-        return False
-    acc["alias"] = alias
-    save_registry(reg, home)
-    return True
+    def mutate(reg: dict):
+        acc = reg["accounts"].get(account_key)
+        if acc is None:
+            return None  # не пишем registry, если аккаунт не найден
+        acc["alias"] = alias
+        return True
+
+    _reg, result = update_registry(mutate, home)
+    return result is True
 
 
 # ---------- переключение ----------
 
+def _backup_sort_key(path: Path):
+    """Порядок бэкапов: сначала метка времени, затем номер .1/.2/… .
+
+    Численный суффикс, иначе .1 > .10 > .2 лексикографически и лимит
+    хранения режет не самые старые файлы.
+    """
+    name = path.name
+    base, _, tail = name.partition(".")
+    try:
+        return (base, int(tail) if tail.isdigit() else 0)
+    except ValueError:
+        return (name, 0)
+
+
 def _prune_backups(home: Path | None = None, keep: int = BACKUP_KEEP) -> None:
     try:
-        files = sorted(backup_dir(home).glob("auth.json.bak-*"))
+        files = sorted(backup_dir(home).glob("auth.json.bak-*"), key=_backup_sort_key)
     except OSError:
         return
     for old in files[:-keep] if len(files) > keep else []:
@@ -376,18 +406,53 @@ def _prune_backups(home: Path | None = None, keep: int = BACKUP_KEEP) -> None:
             pass
 
 
+def _replace_live_auth(auth: dict, home: Path | None) -> None:
+    """Бэкап + атомарная замена живого auth.json. Вызывается под замком."""
+    live = live_auth_path(home)
+    backup_dir(home).mkdir(parents=True, exist_ok=True)
+    if live.exists():
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        dest = backup_dir(home) / f"auth.json.bak-{stamp}"
+        n = 1
+        while dest.exists():
+            n += 1
+            dest = backup_dir(home) / f"auth.json.bak-{stamp}.{n}"
+        shutil.copy2(live, dest)
+        if os.name == "posix":
+            try:
+                os.chmod(dest, 0o600)
+            except OSError:
+                pass
+    # атомарная запись с сохранением режима живого файла
+    fd, tmp = tempfile.mkstemp(dir=str(live.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(auth, f, ensure_ascii=False, indent=2)
+        if os.name == "posix":
+            try:
+                mode = live.stat().st_mode if live.exists() else 0o600
+                os.chmod(tmp, mode)
+            except OSError:
+                pass
+        os.replace(tmp, live)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def switch(account_key: str, home: Path | None = None,
            keep_backups: int = BACKUP_KEEP) -> tuple[bool, str]:
     """Аккаунт → активный: бэкап живого auth.json, копия слепка на его место.
 
     Трогает только auth.json; config.toml/плагины/skills не меняются.
+    Замена файла и запись registry — под одним замком (update_registry),
+    иначе параллельные switch/refresh могут перепутать активный ключ.
     После переключения Codex CLI/App нужно перезапустить — долгоживущие
     процессы держат старый токен в памяти.
     """
-    reg = load_registry(home)
-    acc = reg["accounts"].get(account_key)
-    if acc is None:
-        return False, "Аккаунт не найден в пуле."
     snap = _snapshot_path(account_key, home)
     if not snap.exists():
         return False, "Слепок аккаунта отсутствует (удалён вручную)."
@@ -399,77 +464,45 @@ def switch(account_key: str, home: Path | None = None,
     if parse_identity(auth) is None:
         return False, "Слепок повреждён (нет токенов) — удалите и добавьте аккаунт заново."
 
-    live = live_auth_path(home)
-    try:
-        backup_dir(home).mkdir(parents=True, exist_ok=True)
-        if live.exists():
-            stamp = time.strftime("%Y%m%d-%H%M%S")
-            dest = backup_dir(home) / f"auth.json.bak-{stamp}"
-            n = 1
-            while dest.exists():
-                n += 1
-                dest = backup_dir(home) / f"auth.json.bak-{stamp}.{n}"
-            shutil.copy2(live, dest)
-            if os.name == "posix":
-                try:
-                    os.chmod(dest, 0o600)
-                except OSError:
-                    pass
-        # атомарная замена с сохранением режима живого файла
-        fd, tmp = tempfile.mkstemp(dir=str(live.parent), suffix=".tmp")
+    def mutate(reg: dict):
+        acc = reg["accounts"].get(account_key)
+        if acc is None:
+            return False, "Аккаунт не найден в пуле."
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(auth, f, ensure_ascii=False, indent=2)
-            if os.name == "posix":
-                try:
-                    mode = live.stat().st_mode if live.exists() else 0o600
-                    os.chmod(tmp, mode)
-                except OSError:
-                    pass
-            os.replace(tmp, live)
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-    except OSError as e:
-        return False, f"Не удалось переключить auth.json: {e}"
+            _replace_live_auth(auth, home)
+        except OSError as e:
+            return False, f"Не удалось переключить auth.json: {e}"
+        prev = reg.get("active_account_key", "")
+        if prev and prev != account_key:
+            reg["previous_active_account_key"] = prev
+        reg["active_account_key"] = account_key
+        acc["last_used_at"] = int(time.time())
+        return True, f"Активен: {acc.get('alias') or acc.get('email') or account_key}. Перезапустите Codex, чтобы вступил в силу."
 
-    prev = reg.get("active_account_key", "")
-    if prev and prev != account_key:
-        reg["previous_active_account_key"] = prev
-    reg["active_account_key"] = account_key
-    acc["last_used_at"] = int(time.time())
-    save_registry(reg, home)
-    _prune_backups(home, keep_backups)
-    label = acc.get("alias") or acc.get("email") or account_key
-    return True, f"Активен: {label}. Перезапустите Codex, чтобы вступил в силу."
-
-
-def switch_previous(home: Path | None = None) -> tuple[bool, str]:
-    reg = load_registry(home)
-    prev = reg.get("previous_active_account_key", "")
-    if not prev or prev not in reg["accounts"]:
-        return False, "Предыдущий аккаунт неизвестен."
-    return switch(prev, home)
+    _reg, result = update_registry(mutate, home)
+    if result[0]:
+        _prune_backups(home, keep_backups)
+    return result
 
 
 def remove(account_key: str, home: Path | None = None) -> tuple[bool, str]:
-    reg = load_registry(home)
-    if account_key not in reg["accounts"]:
-        return False, "Аккаунт не найден в пуле."
-    if reg.get("active_account_key") == account_key:
-        return False, "Нельзя удалить активный аккаунт — сначала переключитесь на другой."
-    del reg["accounts"][account_key]
-    if reg.get("previous_active_account_key") == account_key:
-        reg["previous_active_account_key"] = ""
-    try:
-        _snapshot_path(account_key, home).unlink(missing_ok=True)
-    except OSError:
-        pass
-    save_registry(reg, home)
-    return True, "Аккаунт удалён из пула."
+    def mutate(reg: dict):
+        if account_key not in reg["accounts"]:
+            return False, "Аккаунт не найден в пуле."
+        if reg.get("active_account_key") == account_key:
+            return False, "Нельзя удалить активный аккаунт — сначала переключитесь на другой."
+        del reg["accounts"][account_key]
+        if reg.get("previous_active_account_key") == account_key:
+            reg["previous_active_account_key"] = ""
+        return True, "Аккаунт удалён из пула."
+
+    _reg, result = update_registry(mutate, home)
+    if result[0]:
+        try:
+            _snapshot_path(account_key, home).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return result
 
 
 # ---------- квоты ----------
@@ -703,15 +736,26 @@ def refresh_names(timeout: float = 15.0, home: Path | None = None) -> None:
 # ---------- обслуживание ----------
 
 def clean(keep_backups: int = BACKUP_KEEP, home: Path | None = None) -> str:
-    """Удаляет бэкапы сверх лимита и записи без слепков. Возвращает отчёт."""
+    """Удаляет бэкапы сверх лимита и записи без слепков. Возвращает отчёт.
+
+    Активный ключ перепроверяется по живому auth.json (а не «первый
+    попавшийся»), чтобы GUI не показывал активным не тот аккаунт.
+    """
     _prune_backups(home, keep_backups)
-    reg = load_registry(home)
-    orphaned = [k for k in reg["accounts"] if not _snapshot_path(k, home).exists()]
-    for key in orphaned:
-        del reg["accounts"][key]
-    if reg.get("active_account_key") not in reg["accounts"]:
-        reg["active_account_key"] = next(iter(reg["accounts"]), "")
-    save_registry(reg, home)
+
+    def mutate(reg: dict):
+        orphaned = [k for k in reg["accounts"] if not _snapshot_path(k, home).exists()]
+        for key in orphaned:
+            del reg["accounts"][key]
+        # активный ключ: сначала живой auth.json, затем сохранённый
+        live_key = active_identity(home)[1]
+        if live_key and live_key in reg["accounts"]:
+            reg["active_account_key"] = live_key
+        elif reg.get("active_account_key") not in reg["accounts"]:
+            reg["active_account_key"] = next(iter(reg["accounts"]), "")
+        return orphaned
+
+    _reg, orphaned = update_registry(mutate, home)
     parts = [f"бэкапов оставлено ≤ {keep_backups}"]
     if orphaned:
         parts.append(f"убрано записей без слепков: {len(orphaned)}")

@@ -55,7 +55,14 @@ def default_model() -> str:
 
 
 def default_config_path() -> str:
-    home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+    # Единый источник правды — codex_accounts.codex_home() (CODEX_HOME или
+    # ~/.codex), чтобы генератор, GUI и пул аккаунтов не разошлись.
+    try:
+        import codex_accounts
+    except ImportError:
+        home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+    else:
+        home = str(codex_accounts.codex_home())
     return os.path.join(home, "config.toml")
 
 
@@ -126,6 +133,13 @@ def write_config(profile: str, config_path: str | None = None) -> tuple[bool, st
     if os.path.exists(path) and not os.path.exists(backup):
         shutil.copy2(path, backup)
         print(f"Backup: {backup}", file=sys.stderr)
+
+    # Каталог Codex может не существовать (CODEX_HOME на новый путь) —
+    # mkstemp упал бы сырым FileNotFoundError.
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    except OSError as e:
+        return False, f"ERROR: каталог конфига недоступен: {path} ({e})"
 
     doc = read_doc(path)
     apply_profile(doc, profile)

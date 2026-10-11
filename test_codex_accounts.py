@@ -9,6 +9,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import codex_accounts as ca
@@ -336,6 +338,83 @@ def test_nested_claim_shape() -> None:
         assert accounts[0]["account_key"] == "u9::acc9"
         assert accounts[0]["plan"] == "plus"
         assert active == "u9::acc9"
+
+
+def test_refresh_and_switch_concurrent() -> None:
+    """Гонка refresh (фон) против switch (главный поток): оба должны уцелеть.
+
+    Регрессия: мутаторы registry писались вне замка, и «опоздавший»
+    refresh затирал активный ключ, выставленный switch.
+    """
+    import threading as _t
+
+    with _Home() as home:
+        (home / "auth.json").write_text(json.dumps(_auth("a@x.io", "u1", "acc1")), encoding="utf-8")
+        ca.add_current()
+        (home / "auth.json").write_text(json.dumps(_auth("b@x.io", "u2", "acc2")), encoding="utf-8")
+        ca.add_current()
+        accounts, _ = ca.list_accounts()
+        key_a = next(a["account_key"] for a in accounts if a["email"] == "a@x.io")
+        key_b = next(a["account_key"] for a in accounts if a["email"] == "b@x.io")
+
+        payload = {"plan_type": "plus",
+                   "rate_limit": {"primary_window": {"used_percent": 42,
+                                                      "limit_window_seconds": 18000,
+                                                      "reset_after_seconds": 100,
+                                                      "reset_at": 1773491460}}}
+
+        def slow_http(url, access, account, timeout=15.0):
+            # «медленная сеть»: во время запроса главный поток делает switch
+            time.sleep(0.15)
+            return payload, 200, None
+
+        orig = ca._http_get_json
+        ca._http_get_json = slow_http
+        try:
+            t = _t.Thread(target=ca.refresh_account, args=(key_a,))
+            t.start()
+            ok, _ = ca.switch(key_b)
+            assert ok
+            t.join()
+        finally:
+            ca._http_get_json = orig
+
+        reg = ca.load_registry()
+        assert reg["active_account_key"] == key_b  # switch не потерян
+        assert reg["accounts"][key_a]["usage"]["source"] == "api"  # квоты живы
+        assert reg["accounts"][key_a]["usage"]["primary"]["used_percent"] == 42
+
+
+def test_registry_mutations_serialised() -> None:
+    """Мутаторы registry пишут под замком: чужой switch не теряется."""
+    import threading
+
+    with _Home() as home:
+        for i in range(4):
+            (home / "auth.json").write_text(
+                json.dumps(_auth(f"u{i}@x.io", f"u{i}", f"acc{i}")), encoding="utf-8")
+            ca.add_current()
+        accounts, _ = ca.list_accounts()
+        keys = [a["account_key"] for a in accounts]
+        errors = []
+
+        def worker(k):
+            try:
+                for _ in range(3):
+                    ca.switch(k)
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(k,)) for k in keys]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
+        reg = ca.load_registry()
+        # после гонки активный ключ — один из существующих, а registry целый
+        assert reg["active_account_key"] in keys
+        assert len(reg["accounts"]) == 4
 
 
 if __name__ == "__main__":

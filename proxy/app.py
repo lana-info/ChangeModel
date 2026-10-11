@@ -130,9 +130,27 @@ PROVIDERS_FILE = os.path.join(project_dir(), "providers.json")
 
 
 def _load_env_file(path: Path | None = None) -> None:
-    """Подтягивает proxy/.env (KEY=value) в окружение, не перекрывая реальные env."""
-    for key, val in _read_env_file(path or Path(project_dir()) / "proxy" / ".env").items():
-        os.environ.setdefault(key, val)
+    """Снимает с окружения ключи, которые раньше были в proxy/.env, но
+    удалены оттуда — иначе удаление ключа (или его очистка в окне GUI)
+    не давало эффекта до перезапуска прокси: значение оставалось в
+    os.environ с прошлого запуска и продолжало работать.
+
+    Значения из файла при этом имеют приоритет над окружением только
+    через get_setting — сам файл в окружение больше не пишется.
+    """
+    global _env_cache
+    path = path or Path(project_dir()) / "proxy" / ".env"
+    try:
+        st = path.stat()
+    except OSError:
+        st = None
+    previous = _env_cache[1] if _env_cache[0] is not None else {}
+    current = _read_env_file(path)
+    if st is not None:
+        _env_cache = ((st.st_mtime_ns, st.st_size), current)
+    for name in previous:
+        if name not in current and os.environ.get(name):
+            del os.environ[name]
 
 
 def _read_env_file(path: Path) -> dict:
@@ -168,14 +186,20 @@ def _env_from_file(path: Path | None = None) -> dict:
     if _env_cache[0] == stamp:
         return _env_cache[1]
     data = _read_env_file(path)
+    # Ключ, пропавший из файла, должен перестать работать сразу: снимаем
+    # оставшееся в окружении значение (иначе оно жило бы до перезапуска).
+    for name in _env_cache[1]:
+        if name not in data and os.environ.get(name):
+            del os.environ[name]
     _env_cache = (stamp, data)
     return data
 
 
-def get_setting(name: str) -> str:
+def get_setting(name: str, env_path: Path | None = None) -> str:
     """Ключ/настройка: proxy/.env имеет приоритет (изменения подхватываются
-    живьём), затем переменная окружения."""
-    val = _env_from_file().get(name, "")
+    живьём), затем переменная окружения.
+    env_path нужен тестам — в бою читается рабочий proxy/.env."""
+    val = _env_from_file(env_path).get(name, "")
     if val:
         return val
     return os.environ.get(name, "")
@@ -264,18 +288,32 @@ def catalog_entries() -> list[dict]:
 
 
 # ---------------------------------------------------------------- auth
+def _parse_host(value: str) -> tuple[str, str] | None:
+    """('127.0.0.1', '4096') из Host; ('', '') если порта нет. None если мусор."""
+    raw = (value or "").strip().lower().rstrip(".")
+    if not raw:
+        return None
+    if raw.startswith("["):  # [::1]:4096
+        host, _, port = raw.partition("]")
+        return host.lstrip("["), port.lstrip(":") if port else ""
+    host, sep, port = raw.rpartition(":")
+    if not sep or ":" in host:  # без порта (или IPv6 без скобок)
+        return raw, ""
+    return host, port
+
+
 def _check_auth(request: Request) -> str | None:
     """Прокси слушает только 127.0.0.1, токены не проверяем. Но проверяем
     Host и Origin: страница из интернета может отправить «простой» POST-запрос
     на localhost прямо из браузера (CSRF/DNS-rebinding) — отклоняем.
     Не-браузерные клиенты (Codex CLI, GUI) Origin не шлют — им ничто не мешает."""
-    host = (request.headers.get("host") or "").lower()
-    if not (
-        host.startswith("127.0.0.1:")
-        or host.startswith("localhost:")
-        or host.startswith("[::1]:")
-        or host in ("127.0.0.1", "localhost", "[::1]")
-    ):
+    parsed = _parse_host(request.headers.get("host") or "")
+    # Точное сравнение hostname/порта: startswith пропускал бы подделки вида
+    # 127.0.0.1:4096.evil.com и 127.0.0.1:4096@evil.com.
+    hosts = {"127.0.0.1", "localhost", "::1"}
+    if parsed is None or parsed[0] not in hosts:
+        return "Invalid Host header"
+    if parsed[1] and parsed[1] != str(PORT):
         return "Invalid Host header"
     # Браузеры всегда прикладывают Origin к кросс-доменному POST; допустим
     # только «сам» прокси, чтобы страница не могла им управлять.
