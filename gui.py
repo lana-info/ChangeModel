@@ -468,7 +468,21 @@ class ChangeModelApp:
         _apply_visual_theme(root)
         _fix_entry_keys(root)
         self._build_layout()
-        self.refresh_providers()
+        try:
+            self.refresh_providers()
+        except Exception as e:
+            # Рисование списков тоже не должно убивать окно (ручная правка
+            # providers.json, «не та» схема) — пробуем восстановить из шаблона.
+            if not messagebox.askyesno(
+                "Vibix ChangeModel",
+                f"Не удалось отобразить настройки провайдеров:\n{e}\n\n"
+                "Восстановить providers.json из шаблона?\n(битая копия будет сохранена рядом)",
+            ):
+                raise SystemExit(1)
+            if not recover_data_file():
+                messagebox.showerror("Vibix ChangeModel", "Не удалось восстановить providers.json.")
+                raise SystemExit(1)
+            self.refresh_providers()
         self.update_status()
         root.bind("<FocusIn>", self._on_focus_in)
         self.refresh_free_news()
@@ -675,8 +689,12 @@ class ChangeModelApp:
     # ---------- data ----------
     def load_providers(self) -> list[dict]:
         data = load_data()
-        self.providers = data.get("providers", [])
-        self._default_model = data.get("default_model", "")
+        providers = data.get("providers", [])
+        if not isinstance(providers, list):
+            providers = []
+        # защита от ручной правки providers.json: мусорные записи пропускаем
+        self.providers = [p for p in providers if isinstance(p, dict) and p.get("id")]
+        self._default_model = data.get("default_model", "") if isinstance(data, dict) else ""
         return self.providers
 
     def save_providers(self) -> None:
@@ -809,17 +827,21 @@ class ChangeModelApp:
         self.update_status()
 
     # ---------- режим Codex: GPT-подписка / сторонние модели ----------
+    @staticmethod
+    def _read_codex_config() -> dict:
+        """config.toml Codex: путь берём из codex_accounts (единый источник)."""
+        import tomllib
+        cfg = codex_accounts.codex_home() / "config.toml"
+        try:
+            with open(cfg, "rb") as f:
+                return tomllib.load(f) or {}
+        except (OSError, ValueError):
+            return {}
+
     def current_mode(self) -> str:
         """'proxy' если Codex смотрит на прокси, иначе 'gpt'."""
-        try:
-            import tomllib
-            path = os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
-            with open(os.path.join(path, "config.toml"), "rb") as f:
-                d = tomllib.load(f)
-            if d.get("model_provider") == "changemodel":
-                return "proxy"
-        except Exception:
-            pass
+        if self._read_codex_config().get("model_provider") == "changemodel":
+            return "proxy"
         return "gpt"
 
     def refresh_mode_panel(self) -> None:
@@ -896,6 +918,8 @@ class ChangeModelApp:
         self.live_interval.insert(0, "60")
         self.live_interval.pack(side=tk.LEFT)
         ttk.Label(row, text="сек").pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(row, text="Псевдоним", command=self.accounts_set_alias).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Button(row, text="Почистить", command=self.accounts_clean).pack(side=tk.LEFT, padx=(6, 0))
         self.refresh_accounts_list()
 
     @staticmethod
@@ -1081,6 +1105,38 @@ class ChangeModelApp:
         self.status_var.set(message)
         self.refresh_accounts_list()
 
+    def accounts_set_alias(self) -> None:
+        """Удобное имя аккаунта (функция codex_accounts.set_alias)."""
+        key = self._selected_account_key()
+        if not key:
+            return
+        current = next((a.get("alias", "") for a in self._accounts
+                        if a.get("account_key") == key), "") or ""
+        dlg = _TextPrompt(self.root, "Псевдоним аккаунта",
+                          "Запоминающееся имя (например «работа» или «личный»):",
+                          current)
+        alias = dlg.show()
+        if alias is None:
+            return
+        try:
+            ok = codex_accounts.set_alias(key, alias.strip())
+        except Exception as e:
+            messagebox.showerror("Codex-аккаунты", str(e))
+            return
+        if ok:
+            self.status_var.set("Псевдоним сохранён")
+            self.refresh_accounts_list()
+
+    def accounts_clean(self) -> None:
+        """Чистка бэкапов и записей без слепков (codex_accounts.clean)."""
+        try:
+            message = codex_accounts.clean()
+        except Exception as e:
+            messagebox.showerror("Codex-аккаунты", str(e))
+            return
+        self.status_var.set(f"Почищено: {message}")
+        self.refresh_accounts_list()
+
     def accounts_refresh_quotas(self) -> None:
         if self._accounts_thread and self._accounts_thread.is_alive():
             return
@@ -1149,7 +1205,11 @@ class ChangeModelApp:
         self.load_providers()
         self.providers_list.delete(0, tk.END)
         for p in self.providers:
-            self.providers_list.insert(tk.END, f"{p['name']}  [{p['id']}]")
+            # providers.json могут править руками — битые записи не должны
+            # ронять окно (прокси в той же ситуации просто пропускает их).
+            if not isinstance(p, dict) or not p.get("id"):
+                continue
+            self.providers_list.insert(tk.END, f"{p.get('name') or p.get('id')}  [{p['id']}]")
         self.refresh_models()
         self.update_status()
 
@@ -1159,9 +1219,12 @@ class ChangeModelApp:
         default = self.default_model()
         if prov:
             for m in prov.get("models", []):
-                marker = " (по умолчанию)" if m["id"] == default else ""
-                free = " · бесплатная" if str(m["id"]).lower().endswith(("-free", ":free")) else ""
-                self.models_list.insert(tk.END, f"{m['name']}  [{m['id']}]{marker}{free}")
+                if not isinstance(m, dict) or not m.get("id"):
+                    continue
+                mid = m["id"]
+                marker = " (по умолчанию)" if mid == default else ""
+                free = " · бесплатная" if str(mid).lower().endswith(("-free", ":free")) else ""
+                self.models_list.insert(tk.END, f"{m.get('name') or mid}  [{mid}]{marker}{free}")
 
     def on_select_provider(self, _event=None) -> None:
         self.refresh_models()
@@ -1220,13 +1283,9 @@ class ChangeModelApp:
             return False
 
     def read_active_model(self) -> str | None:
-        import tomllib
-        path = os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
-        cfg = os.path.join(path, "config.toml")
-        if not os.path.exists(cfg):
+        d = self._read_codex_config()
+        if not d:
             return None
-        with open(cfg, "rb") as f:
-            d = tomllib.load(f)
         if d.get("model") == generator.BASE_MODEL and not d.get("model_provider"):
             return None
         return f"{d.get('model_provider', '?')} / {d.get('model')}"
@@ -1514,6 +1573,42 @@ class ChangeModelApp:
         if self._apply_profile("changemodel"):
             self.refresh_models()
             self.update_status()
+
+
+class _TextPrompt:
+    """Простой модальный запрос одной строки текста."""
+
+    def __init__(self, parent, title: str, label: str, initial: str = "") -> None:
+        self.result: str | None = None
+        self.top = tk.Toplevel(parent)
+        self.top.title(title)
+        self.top.grab_set()
+        self.top.transient(parent)
+        body = ttk.Frame(self.top, padding=16)
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, text=label).pack(anchor=tk.W)
+        self.entry = ttk.Entry(body, width=48)
+        self.entry.insert(0, initial or "")
+        self.entry.pack(fill=tk.X, pady=(4, 8))
+        self.entry.focus_set()
+        self.entry.select_range(0, tk.END)
+        btns = ttk.Frame(body)
+        btns.pack(fill=tk.X)
+        ttk.Button(btns, text="Сохранить", command=self._ok).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Отмена", command=self.top.destroy).pack(side=tk.LEFT, padx=(6, 0))
+        self.top.bind("<Return>", lambda _e: self._ok())
+        self.top.bind("<Escape>", lambda _e: self.top.destroy())
+
+    def _ok(self) -> None:
+        self.result = self.entry.get()
+        self.top.destroy()
+
+    def _wait(self) -> None:
+        self.top.wait_window(self.top)
+
+    def show(self) -> str | None:
+        self.top.wait_window(self.top)
+        return self.result
 
 
 class ProviderDialog:

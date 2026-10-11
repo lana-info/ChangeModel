@@ -638,6 +638,13 @@ def test_check_auth_host_and_origin() -> None:
     assert app_module._check_auth(req({"host": "[::1]:4096"})) is None
     assert app_module._check_auth(req({"host": "evil.com"})) is not None
 
+    # Подделка через префикс: левый hostname с нашим началом должна
+    # отсекаться (раньше проверка была host.startswith("127.0.0.1:")).
+    assert app_module._check_auth(req({"host": "127.0.0.1:4096.evil.com"})) is not None
+    assert app_module._check_auth(req({"host": "127.0.0.1:4096@evil.com"})) is not None
+    assert app_module._check_auth(req({"host": "localhost:4096.evil.com"})) is not None
+    assert app_module._check_auth(req({"host": "127.0.0.1:9999"})) is not None
+
     # Origin чужой страницы — CSRF-защита; без Origin (Codex/GUI) — пропускаем
     assert app_module._check_auth(req({"host": "127.0.0.1:4096", "origin": "http://evil.com"})) is not None
     assert app_module._check_auth(req({"host": "127.0.0.1:4096", "origin": "http://127.0.0.1:4096"})) is None
@@ -952,6 +959,100 @@ def test_add_free_items() -> None:
     assert gui.ChangeModelApp._add_free_items(stub, chosen) == 2
     assert [m["id"] for m in providers[0]["models"]] == ["a", "b"]
     assert [m["id"] for m in providers[1]["models"]] == ["c"]
+
+
+def test_env_from_file_removal_takes_effect() -> None:
+    """Ключ, удалённый из .env, должен перестать работать сразу.
+
+    Регрессия: _load_env_file клал значения в os.environ через setdefault, и
+    посRE записанное значение жило в окружении до перезапуска прокси —
+    «очистка» ключа в GUI не давала эффекта.
+    """
+    import tempfile
+    from pathlib import Path as _P
+
+    with tempfile.TemporaryDirectory() as tmp:
+        env_path = _P(tmp) / ".env"
+        env_path.write_text("TEST_REMOVABLE_KEY=sk-old\nOTHER_KEY=keep\n", encoding="utf-8")
+        # пользовательский os.environ не трогаем
+        app_module.os.environ["TEST_REMOVABLE_KEY"] = "sk-old"
+        app_module.os.environ["OTHER_KEY"] = "keep"
+        try:
+            assert app_module._env_from_file(env_path).get("TEST_REMOVABLE_KEY") == "sk-old"
+
+            # ключ убирают из файла — как это делает GUI при пустом поле
+            env_path.write_text("OTHER_KEY=keep\n", encoding="utf-8")
+            got = app_module._env_from_file(env_path)
+            assert "TEST_REMOVABLE_KEY" not in got
+            assert "TEST_REMOVABLE_KEY" not in app_module.os.environ
+            assert app_module.get_setting("TEST_REMOVABLE_KEY", env_path) == ""
+            assert app_module.get_setting("OTHER_KEY", env_path) == "keep"
+        finally:
+            app_module.os.environ.pop("TEST_REMOVABLE_KEY", None)
+            app_module.os.environ.pop("OTHER_KEY", None)
+            app_module._env_cache = (None, {})
+
+
+def test_env_file_wins_over_environment() -> None:
+    """.env имеет приоритет над переменной окружения (горячая замена ключей)."""
+    import tempfile
+    from pathlib import Path as _P
+
+    with tempfile.TemporaryDirectory() as tmp:
+        env_path = _P(tmp) / ".env"
+        env_path.write_text("TEST_PRIO_KEY=from-file\n", encoding="utf-8")
+        app_module.os.environ["TEST_PRIO_KEY"] = "from-env"
+        try:
+            assert app_module.get_setting("TEST_PRIO_KEY", env_path) == "from-file"
+        finally:
+            app_module.os.environ.pop("TEST_PRIO_KEY", None)
+            app_module._env_cache = (None, {})
+
+
+def test_gui_tolerates_partial_providers_schema() -> None:
+    """Ручная правка providers.json с неполными записями не должна ронять GUI.
+
+    Регрессия: refresh_providers/refresh_models читали p['name']/m['id']
+    напрямую, и KeyError убивал окно до вызова recovery-диалога.
+    """
+    import gui
+
+    providers = [
+        {"id": "no-name", "models": [{"id": "ok-model"}]},
+        {"name": "без id — пропустить целиком"},
+        {"id": "runaway", "name": "Runaway", "models": [{"id": "x"}, {"id": "y"}]},
+    ]
+
+    class _List:
+        def __init__(self, sink):
+            self.sink = sink
+
+        def delete(self, *a):
+            pass
+
+        def insert(self, _idx, text):
+            self.sink.append(text)
+
+    class _Stub(gui.ChangeModelApp):
+        def __init__(self, sink):
+            self.providers = providers
+            self._default_model = ""
+            self.models_list = _List(sink)
+            self.providers_list = _List(sink)
+            self.load_providers = lambda: providers
+            self.update_status = lambda: None
+
+        def current_provider(self):
+            return self.providers[0]
+
+    sink: list[str] = []
+    stub = _Stub(sink)
+    gui.ChangeModelApp.refresh_models(stub)   # модель без id пропущена, но не упали
+    assert "Runaway  [id]" not in sink
+    gui.ChangeModelApp.refresh_providers(stub)  # провайдер без id пропущен
+    assert any("no-name" in ln for ln in sink), sink
+    assert any("Runaway" in ln for ln in sink), sink
+    assert any("без id" in ln for ln in sink) is False, sink
 
 
 def test_entry_ru_keys_defined() -> None:
