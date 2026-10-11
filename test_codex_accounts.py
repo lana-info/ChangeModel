@@ -417,6 +417,84 @@ def test_registry_mutations_serialised() -> None:
         assert len(reg["accounts"]) == 4
 
 
+def test_renew_401_then_retries() -> None:
+    """Просроченный access-токен продлевается через refresh_token, квоты
+    запрашиваются повторно — без входа в браузере."""
+    with _Home() as home:
+        (home / "auth.json").write_text(json.dumps(_auth("a@x.io", "u1", "acc1")), encoding="utf-8")
+        ca.add_current()
+        accounts, _ = ca.list_accounts()
+        key = accounts[0]["account_key"]
+        # ломаем access-токен, refresh_token оставляем живым
+        snap = home / "changemodel-accounts" / "snapshots" / ca.snapshot_filename(key)
+        auth = json.loads(snap.read_text(encoding="utf-8"))
+        auth["tokens"]["access_token"] = "expired"
+        snap.write_text(json.dumps(auth), encoding="utf-8")
+        (home / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+
+        calls = {"n": 0}
+        orig_get, orig_post = ca._http_get_json, ca._http_post_json
+
+        def fake_get(url, access, account, timeout=15.0):
+            calls["n"] += 1
+            # первый вызов (протухший токен) — 401, второй (новый) — квоты
+            if access == "expired":
+                return None, 401, "http_401"
+            return {"rate_limit": {"primary_window": {"used_percent": 20,
+                                                       "limit_window_seconds": 18000,
+                                                       "reset_after_seconds": 60,
+                                                       "reset_at": 1}}}, 200, None
+
+        def fake_post(url, payload, timeout=20.0):
+            return {"access_token": "fresh-token",
+                    "id_token": payload.get("refresh_token"),
+                    "refresh_token": "new-refresh"}, 200, None
+
+        ca._http_get_json, ca._http_post_json = fake_get, fake_post
+        try:
+            ok, msg = ca.refresh_account(key)
+        finally:
+            ca._http_get_json, ca._http_post_json = orig_get, orig_post
+        assert ok, msg
+        assert calls["n"] == 2, calls  # 401 -> продление -> повтор
+        renewed = json.loads(snap.read_text(encoding="utf-8"))
+        assert renewed["tokens"]["access_token"] == "fresh-token"
+        assert renewed["tokens"]["refresh_token"] == "new-refresh"
+        live = json.loads((home / "auth.json").read_text(encoding="utf-8"))
+        assert live["tokens"]["access_token"] == "fresh-token"  # активному — и живой файл
+        usage = ca.load_registry()["accounts"][key]["usage"]
+        assert usage["primary"]["used_percent"] == 20
+
+
+def test_renew_dead_refresh_token_message() -> None:
+    """Протухший refresh_token → внятное сообщение, слепок не портим."""
+    with _Home() as home:
+        (home / "auth.json").write_text(json.dumps(_auth("a@x.io", "u1", "acc1")), encoding="utf-8")
+        ca.add_current()
+        accounts, _ = ca.list_accounts()
+        key = accounts[0]["account_key"]
+        before = (home / "changemodel-accounts" / "snapshots" /
+                  ca.snapshot_filename(key)).read_text(encoding="utf-8")
+        orig = ca._http_post_json
+        ca._http_post_json = lambda url, payload, timeout=20.0: (
+            {"error": {"code": "refresh_token_expired"}}, 401, None)
+        try:
+            ok, msg = ca.renew_account(key)
+        finally:
+            ca._http_post_json = orig
+        assert not ok
+        assert "codex login" in msg
+        after = (home / "changemodel-accounts" / "snapshots" /
+                 ca.snapshot_filename(key)).read_text(encoding="utf-8")
+        assert after == before  # старые токены не потеряны
+
+
+def test_refresh_access_token_bad_shape() -> None:
+    """Нет refresh_token — не шлём запрос вовсе."""
+    auth, status, err = ca.refresh_access_token({"tokens": {"access_token": "x"}})
+    assert auth is None and status is None and err == "MissingAuth"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

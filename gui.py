@@ -44,7 +44,7 @@ PROVIDERS_FILE = BASE_DIR / "providers.json"
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "4096"))
 PROXY_HTTP = f"http://127.0.0.1:{PROXY_PORT}"
 
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.5.0"
 GITHUB_REPO = "lana-info/ChangeModel"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 RELEASES_URL = f"{GITHUB_URL}/releases"
@@ -909,6 +909,7 @@ class ChangeModelApp:
         ttk.Button(row, text="Импорт из файла…", command=self.accounts_import).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(row, text="Переключить", command=self.accounts_switch).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(row, text="Обновить лимиты", command=self.accounts_refresh_quotas).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(row, text="Продлить вход", command=self.accounts_renew).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(row, text="Удалить", command=self.accounts_remove).pack(side=tk.LEFT, padx=(6, 0))
         self.live_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(row, text="Live", variable=self.live_var,
@@ -1136,6 +1137,38 @@ class ChangeModelApp:
             return
         self.status_var.set(f"Почищено: {message}")
         self.refresh_accounts_list()
+
+    def accounts_renew(self) -> None:
+        """Продление входа аккаунта через refresh_token — без браузера
+        и без повторной проверки номера (endpoint Codex)."""
+        key = self._selected_account_key()
+        if not key:
+            return
+        if not messagebox.askyesno(
+                "Продлить вход",
+                "Продлить вход аккаунта автоматически?\n\n"
+                "Обновляются только токены входа (как это делает сам Codex). "
+                "Браузер и проверка номера не нужны."):
+            return
+
+        def work() -> None:
+            try:
+                ok, message = codex_accounts.renew_account(key)
+            except Exception as e:
+                ok, message = False, str(e)
+            self._ui_call(lambda: self._after_renew(ok, message))
+
+        self.status_var.set("Продлеваю вход…")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _after_renew(self, ok: bool, message: str) -> None:
+        if ok:
+            self.status_var.set(message)
+        else:
+            messagebox.showerror("Продлить вход", message)
+            self.status_var.set("Не удалось продлить вход")
+        self.refresh_accounts_list()
+        self.accounts_refresh_quotas()
 
     def accounts_refresh_quotas(self) -> None:
         if self._accounts_thread and self._accounts_thread.is_alive():

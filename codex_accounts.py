@@ -42,6 +42,13 @@ USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 ACCOUNTS_URL = "https://chatgpt.com/backend-api/accounts"
 USER_AGENT = "ChangeModel-accounts/1.0"
 
+# Обновление токенов входа Codex — endpoint и client_id из официального
+# Codex CLI (codex-rs/login/src/auth/manager.rs: REFRESH_TOKEN_URL, CLIENT_ID).
+# Продление через refresh_token не требует входа в браузере и обходит
+# необходимость повторной верификации аккаунта.
+TOKEN_URL = os.environ.get("CODEX_REFRESH_TOKEN_URL_OVERRIDE", "https://auth.openai.com/oauth/token")
+CLIENT_ID = os.environ.get("CODEX_APP_SERVER_LOGIN_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann")
+
 # Замок на чтение-изменение-запись registry: фоновый refresh квот
 # (live-таймер/кнопка) и переключение в главном потоке делят один файл.
 # Refresh-пути пишут только свои поля (usage/имена) поверх свежего
@@ -507,6 +514,119 @@ def remove(account_key: str, home: Path | None = None) -> tuple[bool, str]:
 
 # ---------- квоты ----------
 
+def _http_post_json(url: str, payload: dict,
+                    timeout: float = 20.0) -> tuple[dict | None, int | None, str | None]:
+    """(payload, http_status, error) для JSON POST. Без токенов в ответе."""
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r), r.status, None
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        try:
+            return json.loads(body), e.code, None
+        except Exception:
+            return None, e.code, f"http_{e.code}"
+    except Exception as e:
+        return None, None, type(e).__name__
+
+
+def refresh_access_token(auth: dict, timeout: float = 20.0) -> tuple[dict | None, int | None, str | None]:
+    """Новые токены входа по refresh_token (endpoint Codex).
+
+    Возвращает (новый auth.json-слепок, http_status, код ошибки). Слепок
+    мутирует копией — исходный не меняется. Токены нигде не логируются.
+    """
+    tokens = auth.get("tokens")
+    if not isinstance(tokens, dict):
+        return None, None, "MissingAuth"
+    refresh = tokens.get("refresh_token")
+    if not isinstance(refresh, str) or not refresh:
+        return None, None, "MissingAuth"
+    data, status, err = _http_post_json(
+        TOKEN_URL,
+        {"client_id": CLIENT_ID, "grant_type": "refresh_token", "refresh_token": refresh},
+        timeout,
+    )
+    if not isinstance(data, dict):
+        return None, status, err or "NoResponse"
+    access = data.get("access_token")
+    if not isinstance(access, str) or not access:
+        message = ""
+        if isinstance(data.get("error"), dict):
+            message = str(data["error"].get("code") or data["error"].get("type") or "")
+        return None, status or 400, message or "NoAccessToken"
+    updated = json.loads(json.dumps(auth))  # глубокая копия
+    new_tokens = updated.setdefault("tokens", {})
+    new_tokens["access_token"] = access
+    for key in ("id_token", "refresh_token"):
+        val = data.get(key)
+        if isinstance(val, str) and val:
+            new_tokens[key] = val
+    updated["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return updated, status or 200, None
+
+
+def renew_account(account_key: str, timeout: float = 20.0,
+                  home: Path | None = None) -> tuple[bool, str]:
+    """Продлевает вход аккаунта через refresh_token (без браузера).
+
+    Новые токены сохраняются в слепок, а если аккаунт активен — и в живой
+    ~/.codex/auth.json, чтобы Codex сразу подхватил их.
+    """
+    snap = _snapshot_path(account_key, home)
+    if not snap.exists():
+        return False, "Слепок аккаунта отсутствует."
+    try:
+        with open(snap, encoding="utf-8") as f:
+            auth = json.load(f)
+    except (OSError, ValueError):
+        return False, "Слепок повреждён."
+
+    updated, status, err = refresh_access_token(auth, timeout)
+    if updated is None:
+        key = (err or "").lower()
+        if "refresh_token_expired" in key or "token_expired" in key:
+            return False, ("Срок входа истёк даже для автообновления — "
+                           "нужен повторный вход через `codex login`.")
+        if "refresh_token_reused" in key or "refresh_token_invalidated" in key:
+            return False, ("Refresh-токен already used/revoked — "
+                           "нужен повторный вход через `codex login`.")
+        if "invalid_grant" in key:
+            return False, "Сервер отклонил обновление — нужен повторный вход через `codex login`."
+        return False, f"Не удалось продлить вход ({err or status})."
+    try:
+        _write_snapshot(account_key, updated, home)
+    except OSError as e:
+        return False, f"Не удалось сохранить новые токены: {e}"
+    # активному аккаунту продлеваем и живой auth.json — иначе Codex так и
+    # останется с протухшим токеном
+    live_key = active_identity(home)[1]
+    if live_key == account_key:
+        try:
+            _replace_live_auth(updated, home)
+        except OSError:
+            pass  # слепок уже сохранён; живой файл поправится при следующем входе
+    return True, "Вход продлён автоматически (без браузера)."
+
+
+def _account_id_for(auth: dict, acc: dict) -> str:
+    """chatgpt_account_id аккаунта: из записи пула, иначе из токенов."""
+    val = acc.get("chatgpt_account_id")
+    if isinstance(val, str) and val:
+        return val
+    tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
+    val = tokens.get("account_id")
+    return val if isinstance(val, str) else ""
+
+
 def _http_get_json(url: str, access_token: str, account_id: str,
                    timeout: float = 15.0) -> tuple[dict | None, int | None, str | None]:
     """(payload, http_status, error). Токен нигде не логируется."""
@@ -652,24 +772,53 @@ def refresh_account(account_key: str, timeout: float = 15.0,
         return False, "Слепок недоступен."
     tokens = auth.get("tokens") or {}
     access = tokens.get("access_token") if isinstance(tokens, dict) else None
-    account_id = acc.get("chatgpt_account_id") or (tokens.get("account_id") if isinstance(tokens, dict) else "")
-    usage = acc.get("usage") if isinstance(acc.get("usage"), dict) else _blank_usage()
-    usage["refresh"] = {"requested": True, "method": "api", "status": "error",
-                        "http_status": None, "error_code": None}
-    plan_update: dict = {}
-    if not isinstance(access, str) or not access or not account_id:
+    account_id = _account_id_for(auth, acc)
+    if not isinstance(access, str) or not access:
         usage["refresh"]["status"] = "missing_auth"
         usage["refresh"]["error_code"] = "MissingAuth"
         _merge_account_fields(account_key, home, usage=usage)
         return False, "Нет токенов для запроса квот."
+    usage = acc.get("usage") if isinstance(acc.get("usage"), dict) else _blank_usage()
+    usage["refresh"] = {"requested": True, "method": "api", "status": "error",
+                        "http_status": None, "error_code": None}
+    if not isinstance(account_id, str) or not account_id:
+        usage["refresh"]["status"] = "missing_auth"
+        usage["refresh"]["error_code"] = "MissingAuth"
+        _merge_account_fields(account_key, home, usage=usage)
+        return False, "Нет идентификатора аккаунта."
+    plan_update: dict = {}
     payload, status, err = _http_get_json(USAGE_URL, access, account_id, timeout)
+
+    # 401 = протухший access-токен. Продлеваем через refresh_token (без
+    # браузера, endpoint Codex) и сразу повторяем запрос квот.
+    if payload is None and status == 401:
+        renewed, r_status, r_err = refresh_access_token(auth, timeout)
+        if renewed is None:
+            usage["refresh"].update({"status": "http_error", "http_status": status,
+                                     "error_code": r_err or "401"})
+            _merge_account_fields(account_key, home, usage=usage)
+            return False, "401: вход не продлить автоматически — нужен `codex login`."
+        try:
+            _write_snapshot(account_key, renewed, home)
+        except OSError as e:
+            return False, f"Не удалось сохранить продлённый вход: {e}"
+        if active_identity(home)[1] == account_key:
+            try:
+                _replace_live_auth(renewed, home)
+            except OSError:
+                pass
+        auth = renewed
+        tokens = auth.get("tokens") or {}
+        access = tokens.get("access_token")
+        payload, status, err = _http_get_json(USAGE_URL, access, account_id, timeout)
+
     if payload is None:
         usage["refresh"]["status"] = "http_error" if status else "error"
         usage["refresh"]["http_status"] = status
         usage["refresh"]["error_code"] = err
         _merge_account_fields(account_key, home, usage=usage)  # старый кэш остаётся видимым
         if status == 401:
-            return False, "401: токен протух — войдите заново (`codex login`) и добавьте аккаунт."
+            return False, "401: токен протух — вход продлить не удалось, нужен `codex login`."
         if status == 403:
             return False, "403: доступ запрещён для этого аккаунта."
         return False, f"Не удалось обновить квоты ({err or status}). Показан кэш."
